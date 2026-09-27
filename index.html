@@ -10,25 +10,25 @@
     --bg:#101418; --panel:#161b21; --line:#232a32; --line-soft:#2a323c;
     --text:#e0e0e0; --dim:#8a949e; --faint:#6c757e;
     --accent:#4da3ff; --accent-bg:#223042; --accent-line:#2e3d52;
-    --pending:#ffc86b; --ok:#8fbf7f; --err:#e58b8b;
+    --go:#2e7d4f; --go-line:#3c9c63; --stop:#8a3b3b; --stop-line:#b04a4a;
+    --rec:#ff6b6b; --ok:#8fbf7f; --err:#e58b8b;
   }
   * { box-sizing:border-box; }
   body { font-family:-apple-system, system-ui, sans-serif; background:var(--bg);
          color:var(--text); margin:0; padding:0.8em; }
 
-  /* Header: the numbers that change while you watch, always in view. */
-  header { display:flex; align-items:baseline; gap:0.8em; flex-wrap:wrap;
-           margin:0 0 0.7em; }
+  header { display:flex; align-items:baseline; gap:0.8em; flex-wrap:wrap; margin:0 0 0.7em; }
   header h1 { font-size:1em; margin:0; font-weight:600; letter-spacing:0.02em; }
   .chips { display:flex; gap:0.4em; flex-wrap:wrap; font-size:0.78em; }
   .chip { background:var(--panel); border:1px solid var(--line); border-radius:999px;
           padding:0.18em 0.7em; color:var(--dim); font-variant-numeric:tabular-nums; }
   .chip b { color:#fff; font-weight:600; }
+  .chip.rec { border-color:#6b2b2b; background:#2a1414; color:var(--rec); }
+  .dot { display:inline-block; width:0.5em; height:0.5em; border-radius:50%;
+         background:var(--rec); margin-right:0.35em; animation:blink 2s infinite; }
+  @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.25 } }
 
-  /* Picture left, controls right; the controls split into two columns on a wide
-     screen so nothing important sits below the fold. */
-  .app { display:grid; gap:1em; grid-template-columns:minmax(0,1fr) 340px;
-         align-items:start; }
+  .app { display:grid; gap:1em; grid-template-columns:minmax(0,1fr) 340px; align-items:start; }
   .side { display:grid; gap:0.8em; align-content:start; }
   @media (min-width:1500px) { .app { grid-template-columns:minmax(0,1fr) 700px; }
                               .side { grid-template-columns:1fr 1fr; } }
@@ -36,81 +36,79 @@
 
   #img-wrap { position:relative; display:block; line-height:0; touch-action:none;
               cursor:crosshair; }
+  #img-wrap.locked { cursor:default; }
   #live { width:100%; height:auto; border-radius:8px; border:1px solid var(--line);
           box-shadow:0 4px 24px rgba(0,0,0,0.4); background:#1a1f25; display:block; }
+  #img-wrap.locked #live { border-color:#5a2f2f; }
   #roi-box { position:absolute; border:2px solid var(--accent); border-radius:2px;
              background:rgba(77,163,255,0.10); pointer-events:none; display:none; }
-  #roi-box.pending { border-style:dashed; border-color:var(--pending);
-                     background:rgba(255,200,107,0.12); }
-  .hint { color:var(--faint); font-size:0.78em; margin:0.5em 0 0; }
-
-  /* Actions sit on the picture itself — where the dragging happens. */
-  .toolbar { display:flex; gap:0.5em; margin-top:0.6em; flex-wrap:wrap; }
-  /* width:auto beats the base button rule, or each one claims a whole row. */
-  .toolbar button { flex:1 1 12em; width:auto; margin:0; }
+  .hint { color:var(--faint); font-size:0.78em; margin:0.6em 0 0; }
+  #msg-view { font-size:0.8em; min-height:1.2em; margin-top:0.5em; color:var(--ok); }
+  #msg-view.err { color:var(--err); }
 
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px;
            padding:0.8em; }
+  .panel.live { border-color:#5a2f2f; }
   h2 { font-size:0.75em; margin:0 0 0.7em; color:var(--dim); font-weight:600;
-       text-transform:uppercase; letter-spacing:0.06em; }
+       text-transform:uppercase; letter-spacing:0.06em;
+       display:flex; justify-content:space-between; align-items:baseline; gap:0.5em; }
+  h2 .sub { text-transform:none; letter-spacing:0; color:var(--faint);
+            font-weight:400; font-size:0.95em; overflow-wrap:anywhere; }
 
-  /* Stats as label/value pairs, two per row where there is room. */
-  .stats { display:grid; grid-template-columns:1fr 1fr; gap:0.45em 0.9em; }
-  .stat { min-width:0; }
-  .stat span { display:block; font-size:0.7em; color:var(--faint);
-               text-transform:uppercase; letter-spacing:0.04em; }
-  .stat b { font-size:0.9em; font-weight:600; font-variant-numeric:tabular-nums;
-            overflow-wrap:anywhere; }
-  .stat.wide { grid-column:1 / -1; }
+  label { display:block; font-size:0.72em; color:var(--faint); margin-bottom:0.2em;
+          text-transform:uppercase; letter-spacing:0.04em; }
+  input, select { width:100%; padding:0.42em; background:#0f1318; color:var(--text);
+                  border:1px solid var(--line-soft); border-radius:5px; font-size:0.88em; }
+  input:disabled, select:disabled { opacity:0.5; }
+  .field { margin-top:0.6em; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0.5em; }
+  .region-row { display:grid; grid-template-columns:1fr auto; gap:0.5em; align-items:end; }
+  .region-row button { width:auto; padding:0.42em 0.8em; }
+  .value { padding:0.42em 0; font-size:0.9em; font-weight:600;
+           font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 
   button { width:100%; padding:0.5em; font-size:0.88em; background:var(--accent-bg);
            color:#e8eef5; border:1px solid var(--accent-line); border-radius:6px;
            cursor:pointer; }
   button:hover:not(:disabled) { background:#2b3d54; }
   button:disabled { opacity:0.45; cursor:default; }
+  button.big { margin-top:0.8em; padding:0.7em; font-size:0.95em; font-weight:600; }
+  button.go { background:var(--go); border-color:var(--go-line); }
+  button.go:hover:not(:disabled) { background:#358c5a; }
+  button.stop { background:var(--stop); border-color:var(--stop-line); }
+  button.stop:hover:not(:disabled) { background:#9d4444; }
   button.primary { background:#2b5c8a; border-color:#3a7ab5; }
   button.primary:hover:not(:disabled) { background:#336ba0; }
-
-  .field { margin-top:0.6em; }
-  label { display:block; font-size:0.72em; color:var(--faint); margin-bottom:0.2em;
-          text-transform:uppercase; letter-spacing:0.04em; }
-  input, select { width:100%; padding:0.42em; background:#0f1318; color:var(--text);
-                  border:1px solid var(--line-soft); border-radius:5px; font-size:0.88em; }
-  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0.5em; }
-  .period-row { display:grid; grid-template-columns:1fr 1fr auto; gap:0.5em; }
-  .period-row button { width:auto; padding:0.42em 0.9em; }
-  /* Destructive action: quiet until pointed at. */
   .del { width:auto; padding:0.05em 0.45em; font-size:0.9em; line-height:1.3;
          background:none; border-color:transparent; color:var(--faint); }
   .del:hover { background:#3a2226; border-color:#5d2f35; color:var(--err); }
-  /* Paused is a state you must not miss when glancing at the page. */
-  .chip.paused { border-color:#6b4d1f; background:#2a2113; color:#ffc86b; }
-  button.paused { background:#5c3a1f; border-color:#8a5a2b; }
-  button.paused:hover:not(:disabled) { background:#6d4626; }
-  li.current b { color:var(--accent); font-weight:600; }
-  .sess-name { min-width:0; overflow-wrap:anywhere; }
 
-  #msg, #msg-view { font-size:0.78em; min-height:1.1em; margin-top:0.6em;
-                    color:var(--ok); }
-  #msg.err, #msg-view.err { color:var(--err); }
-  #msg-view.pending { color:var(--pending); }
-  /* An unsaved selection is a state the page must shout about: the region is not
-     being stored until this button is pressed. */
-  @keyframes nudge { 0%,100% { box-shadow:0 0 0 0 rgba(255,200,107,0.0); }
-                     50% { box-shadow:0 0 0 4px rgba(255,200,107,0.25); } }
-  button.unsaved { background:#5c4a1f; border-color:var(--pending); color:#ffe9bd;
-                   animation:nudge 1.6s ease-in-out infinite; }
-  button.unsaved:hover:not(:disabled) { background:#6d5826; }
-  progress { width:100%; height:0.55em; margin-top:0.5em; }
+  .stats { display:grid; grid-template-columns:1fr 1fr; gap:0.45em 0.9em;
+           margin-top:0.8em; padding-top:0.7em; border-top:1px solid var(--line); }
+  /* display:grid would otherwise beat the UA rule for [hidden]. */
+  .stats[hidden] { display:none; }
+  .stat span { display:block; font-size:0.7em; color:var(--faint);
+               text-transform:uppercase; letter-spacing:0.04em; }
+  .stat b { font-size:0.9em; font-weight:600; font-variant-numeric:tabular-nums; }
 
   ul { list-style:none; margin:0; padding:0; font-size:0.85em;
-       max-height:11em; overflow:auto; }
-  li { display:flex; justify-content:space-between; gap:0.6em; padding:0.25em 0;
-       border-bottom:1px solid var(--line); }
+       max-height:13em; overflow:auto; }
+  li { display:flex; justify-content:space-between; align-items:center; gap:0.5em;
+       padding:0.35em 0.4em; border-bottom:1px solid var(--line); border-radius:5px; }
   li:last-child { border-bottom:0; }
+  li.pick { cursor:pointer; }
+  li.pick:hover { background:#1b222a; }
+  li.sel { background:#1b2a3a; outline:1px solid var(--accent-line); }
+  li .who { min-width:0; overflow-wrap:anywhere; }
+  li .who b { color:var(--text); font-weight:600; }
+  li.sel .who b { color:var(--accent); }
+  li.live .who b { color:var(--rec); }
   a { color:#7fb3e5; text-decoration:none; overflow-wrap:anywhere; }
   a:hover { text-decoration:underline; }
-  .muted { color:var(--faint); font-size:0.78em; white-space:nowrap; }
+  .muted { color:var(--faint); font-size:0.78em; }
+  #msg { font-size:0.78em; min-height:1.1em; margin-top:0.6em; color:var(--ok); }
+  #msg.err { color:var(--err); }
+  progress { width:100%; height:0.55em; margin-top:0.5em; }
 </style>
 </head>
 <body>
@@ -118,11 +116,10 @@
 <header>
   <h1>Timelapse</h1>
   <div class="chips">
+    <span class="chip" id="chip-state">stopped</span>
     <span class="chip">exposure <b id="c-exp">–</b></span>
     <span class="chip">gain <b id="c-gain">–</b></span>
-    <span class="chip">every <b id="c-period">–</b></span>
-    <span class="chip" id="chip-next">next shot <b id="c-next">–</b></span>
-    <span class="chip">stored <b id="c-count">–</b></span>
+    <span class="chip">brightness <b id="c-level">–</b></span>
   </div>
 </header>
 
@@ -132,57 +129,65 @@
       <img id="live" alt="camera live view" />
       <div id="roi-box"></div>
     </div>
-    <div class="toolbar">
-      <button id="save-roi" class="primary" disabled>Save dragged region</button>
-      <button id="clear-roi">Use full frame</button>
-      <button id="new-session">Start new session</button>
-      <button id="pause">Stop recording</button>
-      <button id="shoot">Take a picture now</button>
-    </div>
     <div id="msg-view"></div>
-    <p class="hint"><b>Two steps:</b> drag a box on the picture, then press
-      <b>Save region</b> — until you do, the full frame keeps being stored. Saved stills
-      are that crop at full sensor resolution; only the preview is downscaled. Saving a
-      region starts a new session, because one video cannot mix frame sizes.</p>
+    <p class="hint" id="drag-hint">Drag a box on the picture to set the region — it applies
+      at once, and stills are stored as that crop at full sensor resolution.</p>
   </div>
 
   <aside class="side">
-    <section class="panel">
-      <h2>Capture</h2>
-      <div class="stats">
-        <div class="stat"><span>Region</span><b id="s-roi">full frame</b></div>
-        <div class="stat"><span>Stored size</span><b id="s-crop">–</b></div>
-        <div class="stat"><span>Photos</span><b id="s-count">–</b></div>
-        <div class="stat"><span>On disk</span><b id="s-size">–</b></div>
-        <div class="stat"><span>Last shot</span><b id="s-last">–</b></div>
-        <div class="stat"><span>Next shot</span><b id="s-next">–</b></div>
-        <div class="stat"><span>Sensor</span><b id="s-sensor">–</b></div>
-        <div class="stat"><span>Disk free</span><b id="s-free">–</b></div>
-        <div class="stat"><span>Fills</span><b id="s-rate">–</b></div>
-        <div class="stat"><span>Brightness</span><b id="s-level">–</b></div>
-        <div class="stat wide"><span>Session</span><b id="s-session">–</b></div>
-      </div>
-      <div class="field">
-        <label for="period">Between shots</label>
-        <div class="period-row">
+    <!-- 1. everything a run needs, then one button to begin it -->
+    <section class="panel" id="setup-panel">
+      <h2>Session setup</h2>
+      <div class="grid2">
+        <div>
+          <label for="period">Between shots</label>
           <input id="period" type="number" min="1" step="1" />
+        </div>
+        <div>
+          <label for="period-unit">Unit</label>
           <select id="period-unit">
             <option value="1">seconds</option>
             <option value="60" selected>minutes</option>
             <option value="3600">hours</option>
           </select>
-          <button id="save-period">Save</button>
         </div>
+      </div>
+      <div class="field region-row">
+        <div>
+          <label>Region (drag on the picture)</label>
+          <div class="value" id="s-roi">full frame</div>
+        </div>
+        <button id="clear-roi">Full frame</button>
+      </div>
+      <div class="field grid2">
+        <div>
+          <label for="gain">Gain</label>
+          <input id="gain" type="number" min="1" max="16" step="0.5" />
+        </div>
+        <div>
+          <label>Stored size</label>
+          <div class="value" id="s-crop">–</div>
+        </div>
+      </div>
+      <button id="run" class="big go">Start</button>
+      <div class="stats" id="run-stats" hidden>
+        <div class="stat"><span>Shots</span><b id="s-count">–</b></div>
+        <div class="stat"><span>On disk</span><b id="s-size">–</b></div>
+        <div class="stat"><span>Next shot</span><b id="s-next">–</b></div>
+        <div class="stat"><span>Fills</span><b id="s-rate">–</b></div>
       </div>
     </section>
 
+    <!-- 2. what has been recorded; picking one drives the panel below -->
     <section class="panel">
-      <h2>Generate</h2>
-      <div>
-        <label for="session">Session</label>
-        <select id="session"></select>
-      </div>
-      <div class="field grid2">
+      <h2>Sessions <span class="sub" id="s-free">–</span></h2>
+      <ul id="sessions"><li class="muted">none yet</li></ul>
+    </section>
+
+    <!-- 3. a video out of the selected session, and that session's results -->
+    <section class="panel">
+      <h2>Generate <span class="sub" id="gen-for">no session selected</span></h2>
+      <div class="grid2">
         <div>
           <label for="format">Format</label>
           <select id="format">
@@ -210,35 +215,21 @@
           </select>
         </div>
       </div>
-      <p class="hint">Brightness runs 0 (black) to 255. 0 keeps every frame; try a value
-        a little under the daylight reading above to drop the night ones.</p>
-      <div class="field"><button id="make" class="primary">Generate</button></div>
+      <button id="make" class="primary big">Generate</button>
       <progress id="prog" hidden max="100" value="0"></progress>
       <div id="msg"></div>
-    </section>
-
-    <section class="panel">
-      <h2>Sessions</h2>
-      <ul id="sessions"><li class="muted">none yet</li></ul>
-    </section>
-
-    <section class="panel">
-      <h2>Results</h2>
-      <ul id="videos"><li class="muted">none yet</li></ul>
+      <ul id="videos" style="margin-top:0.6em"><li class="muted">no results yet</li></ul>
     </section>
   </aside>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
-let sensor = [3280, 2464];       // replaced by /status
-let savedRoi = null;             // the region the server is using
-let pending = null;              // just dragged, not saved yet
-let periodTouched = false, sessionTouched = false;
-let paused = false, videoNames = [];
-$("period-unit").addEventListener("change", () => { periodTouched = true; });
-$("period").addEventListener("input", () => { periodTouched = true; });
-$("session").addEventListener("change", () => { sessionTouched = true; });
+let sensor = [3280, 2464];
+let roi = null;                 // the configured region (sensor px), null = full frame
+let recording = false;
+let selected = null;            // the session Generate and the results act on
+let sessions = [], videos = [];
 
 // ── live view: one request in flight, so a slow frame cannot stack up ────────
 function refreshLive() {
@@ -248,35 +239,25 @@ function refreshLive() {
   next.src = "preview.jpg?t=" + Date.now();
 }
 
-// ── region drag: display px -> sensor px ────────────────────────────────────
+// ── region: a drag applies immediately, so there is no step to forget ───────
 const wrap = $("img-wrap");
 let drag = null;
 
 function displayScale() { return sensor[0] / $("live").clientWidth; }
 
-// The button carries the size it would store, so it reads as the next step.
-function markPending() {
-  const b = $("save-roi");
-  b.disabled = !pending;
-  b.classList.toggle("unsaved", !!pending);
-  b.textContent = pending ? `Save region ${pending.w}×${pending.h}`
-                          : "Save dragged region";
-}
-
-function drawBox(roi, isPending) {
+function drawBox(r) {
   const box = $("roi-box"), s = displayScale();
-  if (!roi) { box.style.display = "none"; return; }
+  if (!r) { box.style.display = "none"; return; }
   box.style.display = "block";
-  box.classList.toggle("pending", !!isPending);
-  box.style.left   = (roi.x / s) + "px";
-  box.style.top    = (roi.y / s) + "px";
-  box.style.width  = (roi.w / s) + "px";
-  box.style.height = (roi.h / s) + "px";
+  box.style.left = (r.x / s) + "px";
+  box.style.top = (r.y / s) + "px";
+  box.style.width = (r.w / s) + "px";
+  box.style.height = (r.h / s) + "px";
 }
 
 function pointAt(ev) {
-  const r = $("live").getBoundingClientRect(), s = displayScale();
-  return {x: Math.round((ev.clientX - r.left) * s), y: Math.round((ev.clientY - r.top) * s)};
+  const b = $("live").getBoundingClientRect(), s = displayScale();
+  return {x: Math.round((ev.clientX - b.left) * s), y: Math.round((ev.clientY - b.top) * s)};
 }
 
 function roiFrom(a, b) {
@@ -285,41 +266,20 @@ function roiFrom(a, b) {
 }
 
 wrap.addEventListener("pointerdown", ev => {
+  if (recording) { say("Stop the run to change the region", true); return; }
   drag = pointAt(ev); wrap.setPointerCapture(ev.pointerId); ev.preventDefault();
 });
-wrap.addEventListener("pointermove", ev => {
-  if (drag) drawBox(roiFrom(drag, pointAt(ev)), true);
-});
-wrap.addEventListener("pointerup", ev => {
+wrap.addEventListener("pointermove", ev => { if (drag) drawBox(roiFrom(drag, pointAt(ev))); });
+wrap.addEventListener("pointerup", async ev => {
   if (!drag) return;
-  const roi = roiFrom(drag, pointAt(ev));
+  const box = roiFrom(drag, pointAt(ev));
   drag = null;
-  if (roi.w < 64 || roi.h < 64) {            // a click, not a drag
-    pending = null; markPending(); drawBox(savedRoi, false); say("");
-    return;
-  }
-  pending = roi;
-  drawBox(pending, true);
-  markPending();
-  say(`${roi.w}×${roi.h} px selected — not stored yet, press “Save region” →`,
-      false, "pending");
+  if (box.w < 64 || box.h < 64) { drawBox(roi); return; }   // a click, not a drag
+  sendSetup({roi: box});
 });
-window.addEventListener("resize", () => drawBox(pending || savedRoi, !!pending));
+window.addEventListener("resize", () => drawBox(roi));
 
 // ── helpers ─────────────────────────────────────────────────────────────────
-// Show a period in whatever unit keeps it a round-ish number.
-function fmtPeriod(sec) {
-  if (sec < 60) return sec + " s";
-  if (sec < 3600) return +(sec / 60).toFixed(2) + " min";
-  return +(sec / 3600).toFixed(2) + " h";
-}
-
-function showPeriod(sec) {
-  const unit = sec < 60 ? 1 : (sec < 3600 ? 60 : 3600);
-  $("period-unit").value = String(unit);
-  $("period").value = +(sec / unit).toFixed(unit === 1 ? 0 : 2);
-}
-
 function fmtAge(s) {
   if (s === null || s === undefined) return "–";
   if (s < 60) return s + " s";
@@ -327,11 +287,15 @@ function fmtAge(s) {
   return Math.floor(s / 3600) + " h " + Math.floor((s % 3600) / 60) + " min";
 }
 
-// Feedback belongs where the action was: dragging and the toolbar report under the
-// picture, generating reports inside the Generate panel.
-function say(text, isError, cls) {
+function fmtPeriod(sec) {
+  if (sec < 60) return sec + " s";
+  if (sec < 3600) return +(sec / 60).toFixed(2) + " min";
+  return +(sec / 3600).toFixed(2) + " h";
+}
+
+function say(text, isError) {
   $("msg-view").textContent = text;
-  $("msg-view").className = isError ? "err" : (cls || "");
+  $("msg-view").className = isError ? "err" : "";
 }
 
 function sayGen(text, isError) {
@@ -347,55 +311,94 @@ async function post(url, body) {
   return data;
 }
 
+function periodSeconds() {
+  return parseFloat($("period").value) * parseFloat($("period-unit").value);
+}
+
+// Setup always goes as a whole, so Start records exactly what is on screen.
+async function sendSetup(extra) {
+  const d = await post("setup", Object.assign(
+    {period_s: periodSeconds(), gain: parseFloat($("gain").value)}, extra || {}));
+  roi = d.roi;
+  drawBox(roi);
+  showSetup(d);
+  if (extra && "roi" in extra) {
+    say(roi ? `Region set to ${roi.w}×${roi.h} px at ${roi.x},${roi.y}`
+            : "Region set to the full frame");
+  }
+  return d;
+}
+
+function showSetup(d) {
+  $("s-roi").textContent = d.roi ? `${d.roi.w}×${d.roi.h} at ${d.roi.x},${d.roi.y}`
+                                 : "full frame";
+  $("s-crop").textContent = d.crop_size[0] + "×" + d.crop_size[1];
+}
+
 // ── polling ─────────────────────────────────────────────────────────────────
 async function poll() {
   try {
     const s = await (await fetch("status")).json();
     sensor = s.sensor_size;
-    savedRoi = s.roi;
-    if (!pending) drawBox(savedRoi, false);
+    if (!drag) { roi = s.roi; drawBox(roi); }
+    recording = s.recording;
 
+    const chip = $("chip-state");
+    chip.className = "chip" + (recording ? " rec" : "");
+    chip.innerHTML = recording
+      ? `<span class="dot"></span>recording · every ${fmtPeriod(s.period_s)}`
+      : "stopped";
     $("c-exp").textContent = s.exposure_ms + " ms";
     $("c-gain").textContent = s.actual_gain + "×";
-    paused = s.paused;
-    $("c-next").textContent = paused ? "stopped" : fmtAge(s.next_capture_in_s);
-    $("chip-next").classList.toggle("paused", paused);
-    $("pause").textContent = paused ? "Resume recording" : "Stop recording";
-    $("pause").classList.toggle("paused", paused);
-    $("c-period").textContent = fmtPeriod(s.period_s);
-    $("c-count").textContent = s.photo_count;
+    $("c-level").textContent = s.last_level === null ? "–" : s.last_level;
 
-    $("s-sensor").textContent = sensor[0] + "×" + sensor[1];
-    $("s-roi").textContent = s.roi
-      ? `${s.roi.w}×${s.roi.h} at ${s.roi.x},${s.roi.y}` : "full frame";
-    $("s-crop").textContent = s.crop_size[0] + "×" + s.crop_size[1];
-    $("s-session").textContent = s.session;
+    // The settings belong to the run, so they are locked while it is going.
+    ["period", "period-unit", "gain", "clear-roi"].forEach(id => $(id).disabled = recording);
+    wrap.classList.toggle("locked", recording);
+    $("setup-panel").classList.toggle("live", recording);
+    $("drag-hint").textContent = recording
+      ? "The region is fixed while recording — stop the run to change it."
+      : "Drag a box on the picture to set the region — it applies at once, and stills"
+        + " are stored as that crop at full sensor resolution.";
+    $("run").textContent = recording ? "Stop" : "Start";
+    $("run").className = "big " + (recording ? "stop" : "go");
+    $("run-stats").hidden = !recording;
+
+    const active = document.activeElement;
+    if (!recording && active !== $("period") && active !== $("period-unit")) {
+      const unit = s.period_s < 60 ? 1 : (s.period_s < 3600 ? 60 : 3600);
+      $("period-unit").value = String(unit);
+      $("period").value = +(s.period_s / unit).toFixed(unit === 1 ? 0 : 2);
+    }
+    if (!recording && active !== $("gain")) $("gain").value = s.gain;
+    showSetup({roi: s.roi, crop_size: s.crop_size});
+
     $("s-count").textContent = s.photo_count;
     $("s-size").textContent = s.photos_mb + " MB";
-    $("s-free").textContent = (s.disk_free_mb / 1000).toFixed(2) + " GB";
-    $("s-last").textContent = s.last_capture_ago_s === null
-      ? "–" : fmtAge(s.last_capture_ago_s) + " ago";
-    $("s-next").textContent = paused ? "stopped" : fmtAge(s.next_capture_in_s);
-    $("s-level").textContent = s.last_level === null ? "–" : s.last_level;
+    $("s-next").textContent = fmtAge(s.next_capture_in_s);
     $("s-rate").textContent = s.mb_per_day
       ? (s.mb_per_day >= 1000 ? (s.mb_per_day / 1000).toFixed(1) + " GB/day"
                               : Math.round(s.mb_per_day) + " MB/day") : "–";
-    if (!periodTouched) showPeriod(s.period_s);
-    fillSessions(s.sessions, s.session);
-    fillSessionList(s.sessions);
+    $("s-free").textContent = (s.disk_free_mb / 1000).toFixed(2) + " GB free";
     if (s.error) say(s.error, true);
 
-    const job = s.job, busy = job && (job.state === "encoding" || job.state === "starting");
-    $("make").disabled = busy;
+    sessions = s.sessions;
+    if (!sessions.some(x => x.name === selected)) selected = null;
+    if (!selected) selected = (sessions.find(x => x.current) || sessions[0] || {}).name || null;
+    fillSessions();
+
+    const job = s.job;
+    const busy = job && ["starting", "measuring", "encoding"].includes(job.state);
+    $("make").disabled = busy || !selected;
     $("prog").hidden = !busy;
-    if (busy) {
+    if (job && job.state === "measuring") {
+      sayGen("Measuring brightness…");
+    } else if (busy) {
       $("prog").value = job.percent;
       sayGen(`Encoding ${job.format.toUpperCase()}… ${job.done_frames}/${job.frames} frames`
              + ` (${job.percent}%)${job.skipped ? ` · ${job.skipped} too dark, skipped` : ""}`);
     } else if (job && job.state === "failed") {
       sayGen("Failed: " + job.error, true);
-    } else if (job && job.state === "measuring") {
-      sayGen("Measuring brightness…");
     } else if (job && job.state === "done" && /^(Encoding|Measuring)/.test($("msg").textContent)) {
       sayGen(`Done: ${job.name}${job.skipped ? ` · ${job.skipped} dark frame`
              + `${job.skipped === 1 ? "" : "s"} skipped` : ""}`);
@@ -405,45 +408,49 @@ async function poll() {
   setTimeout(poll, 2000);
 }
 
-function fillSessions(sessions, current) {
-  const sel = $("session");
-  const key = sessions.map(s => `${s.name}|${s.count}`).join(",");
-  if (sel.dataset.key === key) return;          // don't fight the user's choice
-  sel.dataset.key = key;
-  const keep = sessionTouched ? sel.value : current;
-  sel.innerHTML = sessions.map(s =>
-    `<option value="${s.name}">${s.name} — ${s.count} shot${s.count === 1 ? "" : "s"}` +
-    `${s.current ? " (current)" : ""}</option>`).join("");
-  if (sessions.some(s => s.name === keep)) sel.value = keep;
-}
-
-function fillSessionList(sessions) {
+function fillSessions() {
   const ul = $("sessions");
-  const key = sessions.map(s => `${s.name}|${s.count}|${s.mb}|${s.current}`).join(",");
+  const key = sessions.map(s => `${s.name}|${s.count}|${s.mb}|${s.current}`).join(",")
+              + "|" + selected + "|" + videos.length;
   if (ul.dataset.key === key) return;
   ul.dataset.key = key;
-  ul.innerHTML = sessions.length ? sessions.map(s =>
-    `<li class="${s.current ? "current" : ""}">` +
-    `<span class="sess-name">${s.current ? "<b>" : ""}${s.name}${s.current ? "</b>" : ""}` +
-    `<br><span class="muted">${s.count} shot${s.count === 1 ? "" : "s"} · ${s.mb} MB` +
-    `${s.current ? " · recording" : ""}</span></span>` +
-    `<button class="del" data-name="${s.name}" data-count="${s.count}" ` +
-    `title="Delete this session and its photos">✕</button></li>`).join("")
-    : '<li class="muted">none yet</li>';
-  ul.querySelectorAll(".del").forEach(b => { b.onclick = () => removeSession(b.dataset); });
+  ul.innerHTML = sessions.length ? sessions.map(s => {
+    const outputs = videos.filter(v => v.session === s.name).length;
+    return `<li class="pick${s.name === selected ? " sel" : ""}${s.current ? " live" : ""}"`
+      + ` data-name="${s.name}"><span class="who"><b>${s.name}</b><br>`
+      + `<span class="muted">${s.count} shot${s.count === 1 ? "" : "s"} · ${s.mb} MB`
+      + `${outputs ? ` · ${outputs} result${outputs === 1 ? "" : "s"}` : ""}`
+      + `${s.current ? " · recording" : ""}</span></span>`
+      + `<button class="del" data-del="${s.name}" data-count="${s.count}"`
+      + ` title="Delete this session, its photos and its results">✕</button></li>`;
+  }).join("") : '<li class="muted">none yet — set it up and press Start</li>';
+  ul.querySelectorAll("li.pick").forEach(li => {
+    li.onclick = ev => {
+      if (ev.target.dataset.del) return;
+      selected = li.dataset.name;
+      ul.dataset.key = "";
+      fillSessions();
+      renderVideos();
+    };
+  });
+  ul.querySelectorAll(".del").forEach(b => {
+    b.onclick = () => removeSession(b.dataset.del, b.dataset.count);
+  });
+  $("gen-for").textContent = selected || "no session selected";
+  renderVideos();
 }
 
-async function removeSession({name, count}) {
-  const outputs = videoNames.filter(v => v.startsWith(name + "_")).length;
+async function removeSession(name, count) {
+  const outputs = videos.filter(v => v.session === name).length;
   if (!confirm(`Delete session ${name} and its ${count} photo${count === "1" ? "" : "s"}?`
-               + (outputs ? `\nIts ${outputs} generated file${outputs === 1 ? "" : "s"}`
-                          + " will go too." : "")
+               + (outputs ? `\nIts ${outputs} result${outputs === 1 ? "" : "s"} go too.` : "")
                + "\nThis cannot be undone.")) return;
   try {
     const d = await post("session/delete", {name});
     say(`Deleted ${d.deleted}`
-        + (d.removed_videos ? ` and ${d.removed_videos} generated file`
+        + (d.removed_videos ? ` and ${d.removed_videos} result`
                             + `${d.removed_videos === 1 ? "" : "s"}` : ""));
+    if (selected === name) selected = null;
     loadVideos();
   } catch (e) { say(e.message, true); }
 }
@@ -452,79 +459,59 @@ async function removeVideo(name) {
   if (!confirm(`Delete ${name}?\nThis cannot be undone.`)) return;
   try {
     await post("videos/delete", {name});
-    say("Deleted " + name);
+    sayGen("Deleted " + name);
     loadVideos();
-  } catch (e) { say(e.message, true); }
+  } catch (e) { sayGen(e.message, true); }
 }
 
-async function loadVideos() {
-  const vids = await (await fetch("videos")).json();
-  videoNames = vids.map(v => v.name);
+// Results belong to the selected session. Files older than that naming scheme keep
+// their own heading rather than disappearing from the page.
+function renderVideos() {
+  const mine = videos.filter(v => v.session === selected);
+  const orphans = videos.filter(v => !v.session);
+  const row = v => `<li><a href="videos/${v.name}" target="_blank">${v.name}</a>`
+    + `<span class="muted">${v.mb} MB</span>`
+    + `<button class="del" data-name="${v.name}" title="Delete this file">✕</button></li>`;
   const ul = $("videos");
-  ul.innerHTML = vids.length
-    ? vids.map(v => `<li><a href="videos/${v.name}" target="_blank">${v.name}</a>`
-                  + `<span class="muted">${v.mb} MB</span>`
-                  + `<button class="del" data-name="${v.name}" title="Delete this file">✕</button>`
-                  + `</li>`).join("")
-    : '<li class="muted">none yet</li>';
+  ul.innerHTML = (mine.length ? mine.map(row).join("")
+        : `<li class="muted">${selected ? "no results for this session yet"
+                                        : "no session selected"}</li>`)
+    + (orphans.length ? '<li class="muted" style="border:0">not from any session</li>'
+                        + orphans.map(row).join("") : "");
   ul.querySelectorAll(".del").forEach(b => { b.onclick = () => removeVideo(b.dataset.name); });
 }
 
+async function loadVideos() {
+  videos = await (await fetch("videos")).json();
+  $("sessions").dataset.key = "";        // the result counts changed
+  fillSessions();
+}
+
 // ── actions ─────────────────────────────────────────────────────────────────
-$("save-roi").onclick = async () => {
-  try {
-    const d = await post("roi", {roi: pending});
-    pending = null; markPending();
-    say(`Now storing ${d.roi.w}×${d.roi.h} px crops — new session ${d.session}`);
-  } catch (e) { say(e.message, true); }
-};
-
 $("clear-roi").onclick = async () => {
+  try { await sendSetup({roi: null}); } catch (e) { say(e.message, true); }
+};
+
+$("run").onclick = async () => {
+  $("run").disabled = true;
   try {
-    const d = await post("roi", {roi: null});
-    pending = null; markPending();
-    say("Now storing the full frame — new session " + d.session);
+    if (recording) {
+      const d = await post("stop");
+      say("Stopped — session " + d.closed + " is closed");
+    } else {
+      await sendSetup({});                       // apply what is on screen, then go
+      const d = await post("start");
+      selected = d.session;
+      say(`Recording into ${d.session}, a shot every ${fmtPeriod(periodSeconds())}`);
+    }
+    loadVideos();
   } catch (e) { say(e.message, true); }
-};
-
-$("save-period").onclick = async () => {
-  const seconds = parseFloat($("period").value) * parseFloat($("period-unit").value);
-  try {
-    const d = await post("period", {seconds});
-    periodTouched = false;
-    sayGen("A shot every " + fmtPeriod(d.period_s)
-        + (d.period_s < 10 ? " — a full-res capture takes about 4 s, so shots will"
-                           + " simply follow each other as fast as the camera manages" : ""));
-  } catch (e) { sayGen(e.message, true); }
-};
-
-$("pause").onclick = async () => {
-  try {
-    const d = await post("pause", {paused: !paused});
-    say(d.paused ? "Recording stopped — the session keeps its photos, and"
-                 + " \u201ctake a picture now\u201d still works"
-                 : "Recording resumed into " + d.session);
-  } catch (e) { say(e.message, true); }
-};
-
-$("new-session").onclick = async () => {
-  try {
-    const d = await post("session/new");
-    say("New session " + d.session);
-  } catch (e) { say(e.message, true); }
-};
-
-$("shoot").onclick = async () => {
-  $("shoot").disabled = true;
-  say("Capturing…");
-  try { say("Saved " + (await post("capture")).saved); }
-  catch (e) { say(e.message, true); }
-  finally { $("shoot").disabled = false; }
+  finally { $("run").disabled = false; }
 };
 
 $("make").onclick = async () => {
   try {
-    await post("timelapse", {session: $("session").value,
+    await post("timelapse", {session: selected,
                              fps: parseFloat($("fps").value),
                              height: parseInt($("height").value, 10),
                              format: $("format").value,

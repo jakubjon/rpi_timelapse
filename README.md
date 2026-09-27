@@ -6,10 +6,10 @@ them into a timelapse video or GIF.
 - **Live view** in the browser, from a cheap downscaled stream.
 - **Drag a region** on the live view. Stills are stored as that crop at **full sensor
   resolution** — the preview is only small for viewing, the stored pixels are native.
-- **Configurable period** between shots — seconds, minutes or hours, changeable from
-  the browser while it runs.
-- **Sessions**: start a fresh one at any time, stop recording when a run is finished,
-  and delete old ones with their photos and generated videos.
+- **Explicit runs**: set the period, region and gain, press **Start**, press **Stop**.
+  Each run is its own session; settings are locked while one is going.
+- **Sessions** list what has been recorded; selecting one drives generation and shows
+  its results. Deleting one takes its photos and its videos with it.
 - **Generate MP4 or GIF** on request, in the background, with a progress bar, and
   optionally skip frames darker than a threshold so the nights drop out.
 - **One service**, restarts on failure, starts at boot, and a watchdog that catches the
@@ -88,41 +88,42 @@ http://timelapse.local:8080/
 
 ## 5. Using it
 
-- **Region**: two steps — drag a box on the live view, **then press Save region**.
-  Until you do, the full frame keeps being stored; while a selection is unsaved the
-  button turns amber, names the size it would store, and a line under the picture says
-  it is not stored yet. Stored stills are that crop at native sensor pixels. **Use full
-  frame** clears it. Saving a region starts a new session directory, because one video
-  cannot mix frame sizes.
-- **Period**: a number plus a unit — seconds, minutes or hours. Takes effect
-  immediately and is remembered across restarts. A full-res capture takes about 4
-  seconds, so below that the shots simply follow each other as fast as the camera
-  manages. Watch the **Fills** figure: at 20-second intervals full frames come to
-  roughly 8 GB a day.
-- **Take a picture now**: one extra still, outside the schedule.
-- **Sessions**: **Start new session** begins a fresh directory without changing the
-  region — useful to separate one run from the next. The Sessions panel lists them all
-  with their shot count and size; **✕** deletes a session, its photos **and the videos
-  generated from it**, after a confirmation. Deleting the one being recorded is allowed:
-  a new session starts immediately in its place. A session that never received a photo
-  is dropped when you leave it, so the list does not fill with empty directories.
-- **Stop recording** ends the current run: no more scheduled stills, while the app, the
-  live view and **Take a picture now** all keep working. The button then reads **Resume
-  recording**, which shoots immediately and carries on at the period. Being stopped
-  survives a restart, so the Pi will not quietly start filling the card again after a
-  power cut.
-- **Results**: each generated file has its own **✕** to delete it, for the ones whose
-  session is long gone.
-- **Generate**: pick a session, frames per second, MP4 or GIF, and a height (or
-  "Native — no scaling" to keep the crop's true size). Encoding runs in the background;
-  results appear under **Results** to download.
+The page is three steps, top to bottom.
+
+**1 — Session setup.** Everything a run needs, in one place:
+
+- **Between shots**: a number plus a unit (seconds, minutes, hours). A full-res capture
+  takes about 4 seconds, so below that the shots simply follow each other as fast as the
+  camera manages.
+- **Region**: drag a box on the live view and it applies at once; **Full frame** clears
+  it. Stills are stored as that crop at **native sensor pixels** — only the preview is
+  downscaled. **Stored size** shows exactly what each file will be.
+- **Gain**: fixed analogue gain, roughly ISO/100. It takes effect immediately, so the
+  live view shows what you are choosing.
+
+Then press **Start**. A session directory is created for the run and capture begins;
+the button becomes **Stop**, and the settings lock, because a session whose frame size
+or cadence changed halfway through would not make one video. Shots, size on disk, time
+to the next shot and the fill rate appear under the button while it runs. **Stop** closes
+the session; a run that never took a photo leaves nothing behind. Being stopped or
+recording survives a restart, so a power cut resumes the run rather than losing it.
+
+**2 — Sessions.** Every run, newest first, with its shot count, size and how many videos
+came out of it; the recording one is marked. **Click one to select it** — that drives the
+panel below. **✕** deletes a session with its photos and its generated videos.
+
+**3 — Generate.** Builds an MP4 or GIF from the **selected** session, in the background
+with a progress bar, and that session's results are listed underneath, each with its own
+**✕**.
+
+- **Frames / s** and **Height** (or "Native — no scaling" to keep the crop's true size).
 - **Skip darker than**: leave out frames whose mean brightness (0 = black, 255 = white)
   falls below the threshold — the usual way to drop the night from a multi-day run. 0
-  keeps everything. The **Brightness** reading in the Capture panel shows the level of
-  the newest still, so pick a value somewhat under the daylight figure. Each still's
-  brightness is measured as it is written and cached in `.brightness.json` inside the
-  session, so filtering costs nothing on a second run; older stills without an entry are
-  measured once (decoded at 1/8 scale) and then cached too.
+  keeps everything. The **brightness** reading in the header shows the newest still's
+  level, so pick a value somewhat under the daylight figure. Each still is measured as it
+  is written and cached in `.brightness.json` inside the session, so filtering costs
+  nothing on a second run; older stills without an entry are measured once (decoded at
+  1/8 scale) and then cached too.
 
 ### Where things land
 
@@ -145,9 +146,9 @@ ExecStart=/usr/bin/python3 app.py --port 8080 --gain 3.0 --period 15
 | Flag | Default | Meaning |
 |---|---|---|
 | `--port` | 8080 | HTTP port |
-| `--period` | 15 | **Minutes** between stills, for the very first run only — once set in the browser, that value wins |
+| `--period` | 15 | **Minutes** between stills, for the very first run only — afterwards the value set in the browser is remembered |
 | `--stall-limit` | 45 | Seconds a camera call may block before the process exits for a restart |
-| `--gain` | 3.0 | Fixed analogue gain, roughly ISO/100 |
+| `--gain` | 3.0 | Default fixed analogue gain, roughly ISO/100; the browser sets it too |
 | `--camera` | v2.1 | `v2.1` (IMX219) or `hq` (IMX477) |
 | `--captures` `--video-dir` `--state` | in the repo | Override to store elsewhere |
 

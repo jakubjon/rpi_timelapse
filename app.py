@@ -12,8 +12,12 @@ Two streams, for the two jobs:
   lores — small, YUV420. The live view only, so watching costs nearly nothing.
 
 The ROI is in full-res sensor coordinates and stills are that crop at native
-pixels — no downscaling. Changing the ROI starts a new capture session (its own
-directory), because frames of different sizes cannot go into one video.
+pixels — no downscaling.
+
+A run is explicit: set the period, region and gain, press Start and a session
+directory is created for it, press Stop and it is closed. Nothing is captured while
+stopped, and the settings are only editable then — a session whose frame size or
+cadence changed halfway through would not make one video.
 
 Usage:
   python3 app.py                                 # port 8080, 15 min, gain 3
@@ -104,8 +108,8 @@ class Capture:
         self.state_path = state_path
         self.period_s = period_s
         self.roi: dict | None = None          # {x, y, w, h} in sensor px; None = full frame
-        self.session: str = ""
-        self.paused = False                   # recording stopped; the app keeps running
+        self.session: str = ""                # the open session; empty when stopped
+        self.recording = False
         self.lock = threading.Lock()          # one camera consumer at a time
         self.wake = threading.Event()         # period change / capture now
         self.last_path: Path | None = None
@@ -127,7 +131,11 @@ class Capture:
 
     # ── state ────────────────────────────────────────────────────────────────
     def load_state(self) -> None:
-        """Period, ROI and session survive restarts; --period is only a default."""
+        """Settings and any open session survive a restart; the flags are defaults.
+
+        A run interrupted by a power cut resumes into its own session rather than
+        starting a second one for the same stretch of time.
+        """
         try:
             saved = json.loads(self.state_path.read_text())
         except (OSError, ValueError):
@@ -137,53 +145,59 @@ class Capture:
         elif "period_min" in saved:                       # state from before seconds
             self.period_s = float(saved["period_min"]) * 60
         self.roi = saved.get("roi")
-        self.paused = bool(saved.get("paused", False))
-        self.session = saved.get("session") or self.new_session()
+        self.gain = float(saved.get("gain", self.gain))
+        self.session = saved.get("session") or ""
+        self.recording = bool(saved.get("recording", False)) and bool(self.session)
+        if self.recording:
+            (self.base_dir / self.session).mkdir(parents=True, exist_ok=True)
+        else:
+            self.session = ""                             # nothing is open when stopped
+        self.apply_gain()
 
     def save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps(
-            {"period_s": self.period_s, "roi": self.roi, "session": self.session,
-             "paused": self.paused}, indent=1))
-
-    def new_session(self) -> str:
-        """A directory per ROI: one video cannot mix frame sizes.
-
-        An unused session is dropped rather than left behind — changing the region
-        twice, or pressing "start new session" on an empty one, otherwise litters
-        the list with directories that never held a photo.
-        """
-        old = self.base_dir / self.session if self.session else None
-        w, h = self.crop_size()
-        self.session = f"{datetime.now():%Y%m%d_%H%M%S}_{w}x{h}"
-        (self.base_dir / self.session).mkdir(parents=True, exist_ok=True)
-        if old is not None and old.is_dir() and old.name != self.session \
-                and not any(old.glob("*.jpg")):
-            shutil.rmtree(old, ignore_errors=True)
-        return self.session
+            {"period_s": self.period_s, "roi": self.roi, "gain": self.gain,
+             "session": self.session, "recording": self.recording}, indent=1))
 
     def crop_size(self) -> tuple[int, int]:
         return (self.roi["w"], self.roi["h"]) if self.roi else self.sensor_size
 
-    def set_paused(self, paused: bool) -> None:
-        """Stop or resume recording. Resuming shoots at once, then on the period."""
-        self.paused = paused
+    def apply_gain(self) -> None:
+        """Pin the gain; AE keeps adjusting the exposure time to suit the light."""
+        with self.camera() as cam:
+            cam.set_controls(manual_controls(None, self.gain))
+
+    def start(self) -> str:
+        """Open a session named for its time and frame size, and begin capturing."""
+        w, h = self.crop_size()
+        self.session = f"{datetime.now():%Y%m%d_%H%M%S}_{w}x{h}"
+        (self.base_dir / self.session).mkdir(parents=True, exist_ok=True)
+        self.recording = True
+        self.save_state()
+        self.wake.set()                       # shoot now, then on the period
+        return self.session
+
+    def stop(self) -> str:
+        """Close the session. One that never took a photo leaves nothing behind."""
+        closed, self.session, self.recording = self.session, "", False
+        if closed and not any((self.base_dir / closed).glob("*.jpg")):
+            shutil.rmtree(self.base_dir / closed, ignore_errors=True)
         self.save_state()
         self.wake.set()
+        return closed
 
-    def set_period(self, seconds: float) -> None:
-        self.period_s = seconds
-        self.save_state()
-        self.wake.set()                       # re-time the pending sleep
-
-    def set_roi(self, roi: dict | None) -> None:
+    def set_setup(self, period_s: float, roi: dict | None, gain: float) -> None:
+        """Settings for the next run — only while stopped, so a session is uniform."""
+        self.period_s = period_s
         self.roi = roi
-        self.new_session()
+        if gain != self.gain:
+            self.gain = gain
+            self.apply_gain()                 # visible in the live view straight away
         self.save_state()
 
-    def delete_session(self, name: str) -> str | None:
-        """Remove a session directory and its stills. Returns the current session
-        afterwards, starting a fresh one if the deleted session was the live one."""
+    def delete_session(self, name: str) -> str:
+        """Remove a session and its stills. Deleting the open one stops recording."""
         if "/" in name or ".." in name:
             raise ValueError(f"bad session name: {name}")
         target = self.base_dir / name
@@ -191,7 +205,7 @@ class Capture:
             raise FileNotFoundError(f"no such session: {name}")
         shutil.rmtree(target)
         if name == self.session:
-            self.new_session()
+            self.session, self.recording = "", False
             self.save_state()
         return self.session
 
@@ -205,7 +219,7 @@ class Capture:
                         "mb": round(sum(p.stat().st_size for p in shots) / 1e6, 1),
                         "first": shots[0].name if shots else None,
                         "last": shots[-1].name if shots else None,
-                        "current": d.name == self.session})
+                        "current": self.recording and d.name == self.session})
         return out
 
     # ── frames ───────────────────────────────────────────────────────────────
@@ -297,7 +311,7 @@ class Capture:
 
     def capture_loop(self) -> None:
         while True:
-            if self.paused:
+            if not self.recording:
                 self.next_time = 0.0
                 self.wake.wait(timeout=5)
                 self.wake.clear()
@@ -438,21 +452,21 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
         photos = current["count"] if current else 0
         mb_each = (current["mb"] / photos) if photos else 0
         return jsonify({
+            "recording": cap.recording,
             "period_s": cap.period_s,
             "mb_per_day": round(mb_each * 86400 / cap.period_s, 1),
             "gain": cap.gain,
             "sensor_size": list(cap.sensor_size),
             "crop_size": list(cap.crop_size()),
             "roi": cap.roi,
-            "session": cap.session,
+            "session": cap.session or None,
             "sessions": sessions,
             "photo_count": current["count"] if current else 0,
             "photos_mb": current["mb"] if current else 0,
             "last_photo": cap.last_path.name if cap.last_path else None,
             "last_capture_ago_s": round(time.time() - cap.last_time)
                                   if cap.last_time else None,
-            "paused": cap.paused,
-            "next_capture_in_s": None if cap.paused
+            "next_capture_in_s": None if not cap.recording
                                  else max(0, round(cap.next_time - time.time())),
             "last_level": cap.last_level,
             "exposure_ms": round(md.get("ExposureTime", 0) / 1000, 1),
@@ -462,24 +476,45 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
             "job": job,
         })
 
-    @app.post("/period")
-    def set_period():
-        seconds = float((request.json or {}).get("seconds", 0))
+    @app.post("/setup")
+    def setup():
+        """Period, region and gain for the next run. Refused while recording."""
+        if cap.recording:
+            return jsonify({"error": "stop the run before changing its settings"}), 409
+        body = request.json or {}
+        seconds = float(body.get("period_s", cap.period_s))
         if not MIN_PERIOD_S <= seconds <= 24 * 3600:
             return jsonify({"error": f"period must be {MIN_PERIOD_S}s–24h"}), 400
-        cap.set_period(seconds)
-        return jsonify({"period_s": cap.period_s})
+        gain = float(body.get("gain", cap.gain))
+        if not 1.0 <= gain <= 16.0:
+            return jsonify({"error": "gain must be 1–16"}), 400
+        roi = cap.roi if "roi" not in body else body["roi"]
+        if roi:
+            sw, sh = cap.sensor_size
+            try:
+                x, y = even(max(0, roi["x"])), even(max(0, roi["y"]))
+                w, h = even(roi["w"]), even(roi["h"])
+            except (KeyError, TypeError, ValueError):
+                return jsonify({"error": "roi needs numeric x, y, w, h"}), 400
+            w, h = min(w, sw - x), min(h, sh - y)
+            if w < MIN_ROI or h < MIN_ROI:
+                return jsonify({"error": f"region must be at least {MIN_ROI}x{MIN_ROI} px"}), 400
+            roi = {"x": x, "y": y, "w": w, "h": h}
+        cap.set_setup(seconds, roi or None, gain)
+        return jsonify({"period_s": cap.period_s, "roi": cap.roi, "gain": cap.gain,
+                        "crop_size": list(cap.crop_size())})
 
-    @app.post("/session/new")
-    def new_session():
-        cap.new_session()
-        cap.save_state()
-        return jsonify({"session": cap.session})
+    @app.post("/start")
+    def start():
+        if cap.recording:
+            return jsonify({"error": "already recording"}), 409
+        return jsonify({"session": cap.start(), "recording": True})
 
-    @app.post("/pause")
-    def set_paused():
-        cap.set_paused(bool((request.json or {}).get("paused", True)))
-        return jsonify({"paused": cap.paused, "session": cap.session})
+    @app.post("/stop")
+    def stop():
+        if not cap.recording:
+            return jsonify({"error": "not recording"}), 409
+        return jsonify({"closed": cap.stop(), "recording": False})
 
     @app.post("/session/delete")
     def delete_session():
@@ -498,36 +533,12 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
                 removed += 1
         return jsonify({"deleted": name, "session": current, "removed_videos": removed})
 
-    @app.post("/roi")
-    def set_roi():
-        body = request.json or {}
-        sw, sh = cap.sensor_size
-        if not body.get("roi"):                             # clear = full frame
-            cap.set_roi(None)
-            return jsonify({"roi": None, "session": cap.session})
-        r = body["roi"]
-        try:
-            x, y = even(max(0, r["x"])), even(max(0, r["y"]))
-            w, h = even(r["w"]), even(r["h"])
-        except (KeyError, TypeError, ValueError):
-            return jsonify({"error": "roi needs numeric x, y, w, h"}), 400
-        w, h = min(w, sw - x), min(h, sh - y)
-        if w < MIN_ROI or h < MIN_ROI:
-            return jsonify({"error": f"ROI must be at least {MIN_ROI}x{MIN_ROI} px"}), 400
-        cap.set_roi({"x": x, "y": y, "w": w, "h": h})
-        return jsonify({"roi": cap.roi, "session": cap.session})
-
-    @app.post("/capture")
-    def capture_now():
-        try:
-            return jsonify({"saved": cap.capture_still().name})
-        except Exception as exc:
-            return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
-
     @app.post("/timelapse")
     def make_timelapse():
         body = request.json or {}
         session = body.get("session") or cap.session
+        if not session:
+            return jsonify({"error": "no session selected"}), 400
         src = cap.base_dir / session
         if ".." in session or "/" in session or not src.is_dir():
             return jsonify({"error": f"no such session: {session}"}), 404
@@ -549,8 +560,14 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
     def list_videos():
         vids = sorted([p for p in video_dir.glob("*") if p.suffix in VIDEO_SUFFIXES],
                       key=lambda p: p.stat().st_mtime, reverse=True)
-        return jsonify([{"name": v.name, "mb": round(v.stat().st_size / 1e6, 1),
-                         "mtime": v.stat().st_mtime} for v in vids])
+        names = [s["name"] for s in cap.sessions()]
+        out = []
+        for v in vids:
+            owner = next((n for n in names if v.name.startswith(n + "_")), None)
+            out.append({"name": v.name, "session": owner,
+                        "mb": round(v.stat().st_size / 1e6, 1),
+                        "mtime": v.stat().st_mtime})
+        return jsonify(out)
 
     @app.get("/videos/<name>")
     def get_video(name: str):
@@ -579,12 +596,13 @@ def main() -> None:
     parser.add_argument("--state", default=str(ROOT / "data" / "timelapse.json"),
                         help="Where period, ROI and current session are persisted")
     parser.add_argument("--period", type=float, default=15.0,
-                        help="Default MINUTES between stills (the web UI sets seconds "
-                             "and its value, once set, wins over this)")
+                        help="Default MINUTES between stills, for the first run only — "
+                             "afterwards the value set in the web UI is remembered")
     parser.add_argument("--stall-limit", type=float, default=STALL_LIMIT_S,
                         help="Exit for a restart if a camera call blocks this long")
     parser.add_argument("--gain", type=float, default=3.0,
-                        help="Fixed analogue gain; exposure time stays automatic")
+                        help="Default fixed analogue gain (the web UI sets it too); "
+                             "exposure time always stays automatic")
     parser.add_argument("--camera", default="v2.1", choices=sorted(SENSORS),
                         help="Camera module (sets the full-res sensor size)")
     args = parser.parse_args()
