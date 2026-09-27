@@ -1,0 +1,6 @@
+# Captured stills, generated videos and runtime state stay out of git.
+captures/
+videos/
+data/
+__pycache__/
+*.pyc

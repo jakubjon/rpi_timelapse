@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Timelapse — ss-camera</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, system-ui, sans-serif;
+         background:#101418; color:#e0e0e0; margin:0; padding:0.7em; }
+  #layout { display:flex; gap:1em; align-items:flex-start;
+            justify-content:center; flex-wrap:wrap; }
+  h1 { font-size:1.05em; margin:0.2em 0 0.5em; color:#bbb; font-weight:500; }
+  h2 { font-size:0.82em; margin:0 0 0.6em; color:#8a949e; font-weight:600;
+       text-transform:uppercase; letter-spacing:0.05em; }
+  /* The live view is a small stream; the ROI drawn on it is mapped back to
+     full sensor pixels, which is what gets stored. */
+  #img-wrap { position:relative; display:inline-block; line-height:0;
+              width:min(800px, 94vw); touch-action:none; cursor:crosshair; }
+  #live { width:100%; height:auto; border-radius:6px; border:1px solid #2a2f36;
+          box-shadow:0 4px 24px rgba(0,0,0,0.4); background:#1a1f25; display:block; }
+  #roi-box { position:absolute; border:2px solid #4da3ff; background:rgba(77,163,255,0.12);
+             pointer-events:none; display:none; border-radius:2px; }
+  #roi-box.pending { border-style:dashed; border-color:#ffc86b;
+                     background:rgba(255,200,107,0.12); }
+  .panel { background:#161b21; border:1px solid #232a32; border-radius:8px;
+           padding:0.8em; width:min(320px, 94vw); }
+  .panel + .panel { margin-top:0.8em; }
+  .row { display:flex; justify-content:space-between; gap:0.6em;
+         font-size:0.85em; padding:0.15em 0; }
+  .row span:last-child { color:#fff; font-variant-numeric:tabular-nums; }
+  button { width:100%; margin-top:0.5em; padding:0.5em; font-size:0.9em;
+           background:#223042; color:#e8eef5; border:1px solid #2e3d52;
+           border-radius:6px; cursor:pointer; }
+  button:hover:not(:disabled) { background:#2b3d54; }
+  button:disabled { opacity:0.5; cursor:default; }
+  button.primary { background:#2b5c8a; border-color:#3a7ab5; }
+  button.primary:hover:not(:disabled) { background:#336ba0; }
+  label { display:block; font-size:0.8em; color:#8a949e; margin-top:0.5em; }
+  input, select { width:100%; box-sizing:border-box; margin-top:0.2em; padding:0.4em;
+                  background:#0f1318; color:#e0e0e0; border:1px solid #2a323c;
+                  border-radius:5px; font-size:0.9em; }
+  .two { display:flex; gap:0.5em; }
+  #msg { font-size:0.8em; min-height:1.2em; margin-top:0.5em; color:#8fbf7f; }
+  #msg.err { color:#e58b8b; }
+  progress { width:100%; height:0.6em; margin-top:0.5em; }
+  ul { list-style:none; margin:0.3em 0 0; padding:0; font-size:0.85em; }
+  li { padding:0.2em 0; display:flex; justify-content:space-between; gap:0.5em; }
+  a { color:#7fb3e5; }
+  .muted { color:#6c757e; font-size:0.78em; }
+</style>
+</head>
+<body>
+<div id="layout">
+  <div>
+    <h1>Live view <span class="muted" id="live-meta"></span></h1>
+    <div id="img-wrap">
+      <img id="live" alt="camera live view" />
+      <div id="roi-box"></div>
+    </div>
+    <p class="muted">Drag on the picture to choose the region to store. Saved stills are
+      that region at full sensor resolution — the preview is only downscaled for viewing.</p>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Stored region</h2>
+      <div class="row"><span>Sensor</span><span id="s-sensor">–</span></div>
+      <div class="row"><span>Region</span><span id="s-roi">full frame</span></div>
+      <div class="row"><span>Stored size</span><span id="s-crop">–</span></div>
+      <button id="save-roi" class="primary" disabled>Save dragged region</button>
+      <button id="clear-roi">Use full frame</button>
+      <p class="muted">Changing the region starts a new session, because one video
+        cannot mix frame sizes.</p>
+    </div>
+
+    <div class="panel">
+      <h2>Capture</h2>
+      <div class="row"><span>Session</span><span id="s-session">–</span></div>
+      <div class="row"><span>Photos</span><span id="s-count">–</span></div>
+      <div class="row"><span>Size on disk</span><span id="s-size">–</span></div>
+      <div class="row"><span>Disk free</span><span id="s-free">–</span></div>
+      <div class="row"><span>Last shot</span><span id="s-last">–</span></div>
+      <div class="row"><span>Next shot in</span><span id="s-next">–</span></div>
+      <div class="row"><span>Exposure</span><span id="s-exp">–</span></div>
+      <div class="row"><span>Gain</span><span id="s-gain">–</span></div>
+      <label for="period">Period between shots (minutes)</label>
+      <input id="period" type="number" min="0.25" max="1440" step="0.25" />
+      <button id="save-period">Save period</button>
+      <button id="shoot">Take a picture now</button>
+    </div>
+
+    <div class="panel">
+      <h2>Generate</h2>
+      <label for="session">Session</label>
+      <select id="session"></select>
+      <div class="two">
+        <div style="flex:1">
+          <label for="fps">Frames / s</label>
+          <input id="fps" type="number" min="1" max="60" step="1" value="10" />
+        </div>
+        <div style="flex:1">
+          <label for="format">Format</label>
+          <select id="format">
+            <option value="mp4" selected>MP4</option>
+            <option value="gif">GIF</option>
+          </select>
+        </div>
+      </div>
+      <label for="height">Height</label>
+      <select id="height">
+        <option value="720" selected>720p (fast)</option>
+        <option value="1080">1080p</option>
+        <option value="480">480p (fastest)</option>
+        <option value="0">Native — no scaling</option>
+      </select>
+      <button id="make">Generate</button>
+      <progress id="prog" hidden max="100" value="0"></progress>
+      <div id="msg"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Results</h2>
+      <ul id="videos"><li class="muted">none yet</li></ul>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let sensor = [3280, 2464];       // replaced by /status
+let savedRoi = null;             // the ROI the server is using
+let pending = null;              // the ROI just dragged, not saved yet
+let periodTouched = false, sessionTouched = false;
+$("period").addEventListener("input", () => { periodTouched = true; });
+$("session").addEventListener("change", () => { sessionTouched = true; });
+
+// ── live view: one request at a time, so a slow frame cannot stack up ────────
+function refreshLive() {
+  const img = $("live"), next = new Image();
+  next.onload = () => { img.src = next.src; setTimeout(refreshLive, 2000); };
+  next.onerror = () => setTimeout(refreshLive, 4000);
+  next.src = "preview.jpg?t=" + Date.now();
+}
+
+// ── ROI drag: display px -> sensor px ───────────────────────────────────────
+const wrap = $("img-wrap");
+let drag = null;
+
+function displayScale() { return sensor[0] / $("live").clientWidth; }
+
+function drawBox(roi, isPending) {
+  const box = $("roi-box"), s = displayScale();
+  if (!roi) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  box.classList.toggle("pending", !!isPending);
+  box.style.left   = (roi.x / s) + "px";
+  box.style.top    = (roi.y / s) + "px";
+  box.style.width  = (roi.w / s) + "px";
+  box.style.height = (roi.h / s) + "px";
+}
+
+function pointAt(ev) {
+  const r = $("live").getBoundingClientRect(), s = displayScale();
+  return {x: Math.round((ev.clientX - r.left) * s), y: Math.round((ev.clientY - r.top) * s)};
+}
+
+function roiFrom(a, b) {
+  return {x: Math.max(0, Math.min(a.x, b.x)), y: Math.max(0, Math.min(a.y, b.y)),
+          w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y)};
+}
+
+wrap.addEventListener("pointerdown", ev => {
+  drag = pointAt(ev); wrap.setPointerCapture(ev.pointerId); ev.preventDefault();
+});
+wrap.addEventListener("pointermove", ev => {
+  if (drag) drawBox(roiFrom(drag, pointAt(ev)), true);
+});
+wrap.addEventListener("pointerup", ev => {
+  if (!drag) return;
+  const roi = roiFrom(drag, pointAt(ev));
+  drag = null;
+  if (roi.w < 64 || roi.h < 64) {            // a click, not a drag
+    pending = null; $("save-roi").disabled = true; drawBox(savedRoi, false);
+    return;
+  }
+  pending = roi;
+  drawBox(pending, true);
+  $("save-roi").disabled = false;
+  say(`Region ${roi.w}×${roi.h} px selected — save it to start storing it`);
+});
+window.addEventListener("resize", () => drawBox(pending || savedRoi, !!pending));
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+function fmtAge(s) {
+  if (s === null || s === undefined) return "–";
+  if (s < 60) return s + " s";
+  if (s < 3600) return Math.floor(s / 60) + " min " + (s % 60) + " s";
+  return Math.floor(s / 3600) + " h " + Math.floor((s % 3600) / 60) + " min";
+}
+
+function say(text, isError) {
+  $("msg").textContent = text;
+  $("msg").className = isError ? "err" : "";
+}
+
+async function post(url, body) {
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"},
+                             body: JSON.stringify(body || {})});
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.status);
+  return data;
+}
+
+// ── polling ─────────────────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const s = await (await fetch("status")).json();
+    sensor = s.sensor_size;
+    savedRoi = s.roi;
+    if (!pending) drawBox(savedRoi, false);
+
+    $("s-sensor").textContent = sensor[0] + "×" + sensor[1];
+    $("s-roi").textContent = s.roi
+      ? `${s.roi.w}×${s.roi.h} at ${s.roi.x},${s.roi.y}` : "full frame";
+    $("s-crop").textContent = s.crop_size[0] + "×" + s.crop_size[1] + " px";
+    $("s-session").textContent = s.session;
+    $("s-count").textContent = s.photo_count;
+    $("s-size").textContent = s.photos_mb + " MB";
+    $("s-free").textContent = (s.disk_free_mb / 1000).toFixed(2) + " GB";
+    $("s-last").textContent = s.last_capture_ago_s === null
+      ? "–" : fmtAge(s.last_capture_ago_s) + " ago";
+    $("s-next").textContent = fmtAge(s.next_capture_in_s);
+    $("s-exp").textContent = s.exposure_ms + " ms";
+    $("s-gain").textContent = s.actual_gain + "×";
+    $("live-meta").textContent = s.exposure_ms + " ms · gain " + s.actual_gain + "×";
+    if (!periodTouched) $("period").value = s.period_min;
+    fillSessions(s.sessions, s.session);
+    if (s.error) say(s.error, true);
+
+    const job = s.job, busy = job && (job.state === "encoding" || job.state === "starting");
+    $("make").disabled = busy;
+    $("prog").hidden = !busy;
+    if (busy) {
+      $("prog").value = job.percent;
+      say(`Encoding ${job.format.toUpperCase()}… ${job.done_frames}/${job.frames} frames (${job.percent}%)`);
+    } else if (job && job.state === "failed") {
+      say("Failed: " + job.error, true);
+    } else if (job && job.state === "done" && $("msg").textContent.startsWith("Encoding")) {
+      say("Done: " + job.name);
+      loadVideos();
+    }
+  } catch (e) { /* server restarting — the next poll retries */ }
+  setTimeout(poll, 2000);
+}
+
+function fillSessions(sessions, current) {
+  const sel = $("session");
+  const want = sessions.map(s => `${s.name}|${s.count}`).join(",");
+  if (sel.dataset.key === want) return;         // don't fight the user's choice
+  sel.dataset.key = want;
+  const keep = sessionTouched ? sel.value : current;
+  sel.innerHTML = sessions.map(s =>
+    `<option value="${s.name}">${s.name} — ${s.count} shot${s.count === 1 ? "" : "s"}` +
+    `${s.current ? " (current)" : ""}</option>`).join("");
+  if (sessions.some(s => s.name === keep)) sel.value = keep;
+}
+
+async function loadVideos() {
+  const vids = await (await fetch("videos")).json();
+  $("videos").innerHTML = vids.length
+    ? vids.map(v => `<li><a href="videos/${v.name}" target="_blank">${v.name}</a>`
+                  + `<span class="muted">${v.mb} MB</span></li>`).join("")
+    : '<li class="muted">none yet</li>';
+}
+
+// ── actions ─────────────────────────────────────────────────────────────────
+$("save-roi").onclick = async () => {
+  try {
+    const d = await post("roi", {roi: pending});
+    pending = null; $("save-roi").disabled = true;
+    say(`Storing ${d.roi.w}×${d.roi.h} px — new session ${d.session}`);
+  } catch (e) { say(e.message, true); }
+};
+
+$("clear-roi").onclick = async () => {
+  try {
+    const d = await post("roi", {roi: null});
+    pending = null; $("save-roi").disabled = true;
+    say("Storing the full frame — new session " + d.session);
+  } catch (e) { say(e.message, true); }
+};
+
+$("save-period").onclick = async () => {
+  try {
+    const d = await post("period", {minutes: parseFloat($("period").value)});
+    periodTouched = false;
+    say("Period set to " + d.period_min + " min");
+  } catch (e) { say(e.message, true); }
+};
+
+$("shoot").onclick = async () => {
+  $("shoot").disabled = true;
+  say("Capturing…");
+  try { say("Saved " + (await post("capture")).saved); }
+  catch (e) { say(e.message, true); }
+  finally { $("shoot").disabled = false; }
+};
+
+$("make").onclick = async () => {
+  try {
+    await post("timelapse", {session: $("session").value,
+                             fps: parseFloat($("fps").value),
+                             height: parseInt($("height").value, 10),
+                             format: $("format").value});
+    say("Starting…");
+  } catch (e) { say(e.message, true); }
+};
+
+refreshLive(); poll(); loadVideos();
+</script>
+</body>
+</html>
