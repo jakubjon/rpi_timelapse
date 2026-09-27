@@ -44,9 +44,30 @@ SENSORS = {"v2.1": (3280, 2464),      # IMX219, Camera Module v2.1
 
 LORES_SIZE = (800, 600)      # live view stream; 4:3 like the sensor
 MIN_ROI = 64                 # px, in sensor coordinates
+LEVELS_FILE = ".brightness.json"   # cached mean brightness per still, per session
 MIN_PERIOD_S = 1             # a full-res capture takes ~4 s, so this is a floor, not a rate
 STALL_LIMIT_S = 45           # a camera call taking longer than this means the ISP wedged
 JOB_KEEP = 10                # finished jobs kept in the log
+
+
+def brightness_of(path: Path) -> float:
+    """Mean luma 0-255. Decoded at 1/8 scale — 64x less work, same average."""
+    img = cv2.imread(str(path), cv2.IMREAD_REDUCED_GRAYSCALE_8)
+    return round(float(img.mean()), 1) if img is not None else 0.0
+
+
+def read_levels(session_dir: Path) -> dict:
+    try:
+        return json.loads((session_dir / LEVELS_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def write_levels(session_dir: Path, levels: dict) -> None:
+    try:
+        (session_dir / LEVELS_FILE).write_text(json.dumps(levels))
+    except OSError:
+        pass                     # a cache miss next time is not worth failing over
 
 
 def manual_controls(exposure_us: int | None, gain: float | None) -> dict:
@@ -91,6 +112,7 @@ class Capture:
         self.next_time: float = 0.0
         self.metadata: dict = {}
         self.busy_since: float | None = None   # set while a camera call is in flight
+        self.last_level: float | None = None   # brightness of the newest still
 
         self.cam = Picamera2()
         self.cam.configure(self.cam.create_video_configuration(
@@ -229,6 +251,12 @@ class Capture:
         path = out_dir / datetime.now().strftime("%Y%m%d_%H%M%S.jpg")
         if not cv2.imwrite(str(path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 92]):
             raise RuntimeError(f"could not write {path}")
+        # Measure here, off the array already in hand, so generating a video later
+        # never has to decode this frame just to find out how dark it is.
+        self.last_level = round(float(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).mean()), 1)
+        levels = read_levels(out_dir)
+        levels[path.name] = self.last_level
+        write_levels(out_dir, levels)
         self.last_path, self.last_time, self.last_error = path, time.time(), None
         return path
 
@@ -259,12 +287,15 @@ class Capture:
 class VideoJob:
     """One ffmpeg run over a session's stills: MP4 or GIF, with progress."""
 
-    def __init__(self, src: Path, out_dir: Path, fps: float, height: int, fmt: str):
+    def __init__(self, src: Path, out_dir: Path, fps: float, height: int, fmt: str,
+                 min_level: float = 0.0):
         self.src = src
         self.out_dir = out_dir
         self.fps = fps
         self.height = height          # 0 = native crop size, no scaling
         self.fmt = fmt
+        self.min_level = min_level    # 0 = keep every frame
+        self.skipped = 0
         self.frames = 0
         self.done_frames = 0
         self.state = "starting"
@@ -277,6 +308,7 @@ class VideoJob:
         return {"state": self.state, "frames": self.frames, "name": self.name,
                 "done_frames": self.done_frames, "error": self.error,
                 "fps": self.fps, "height": self.height, "format": self.fmt,
+                "min_level": self.min_level, "skipped": self.skipped,
                 "session": self.src.name, "started": self.started,
                 "finished": self.finished,
                 "percent": round(100 * self.done_frames / self.frames, 1)
@@ -292,13 +324,32 @@ class VideoJob:
                ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
                 "-pix_fmt", "yuv420p"]
 
+    def keep(self, shots: list[Path]) -> list[Path]:
+        """Drop frames darker than the threshold, measuring any not already known."""
+        if self.min_level <= 0:
+            return shots
+        self.state = "measuring"
+        levels = read_levels(self.src)
+        missing = [p for p in shots if p.name not in levels]
+        for p in missing:                       # stills from before this cache existed
+            levels[p.name] = brightness_of(p)
+        if missing:
+            write_levels(self.src, levels)
+        return [p for p in shots if levels.get(p.name, 0.0) >= self.min_level]
+
     def run(self) -> None:
         listing = None
         try:
             shots = sorted(self.src.glob("*.jpg"))
+            found = len(shots)
+            shots = self.keep(shots)
+            self.skipped = found - len(shots)
             self.frames = len(shots)
             if self.frames < 2:
-                self.state, self.error = "failed", "need at least 2 photos"
+                self.state = "failed"
+                self.error = (f"only {self.frames} of {found} frames are brighter than "
+                              f"{self.min_level} — lower the threshold"
+                              if self.skipped else "need at least 2 photos")
                 return
             self.out_dir.mkdir(parents=True, exist_ok=True)
             name = f"{self.src.name}_{datetime.now():%H%M%S}.{self.fmt}"
@@ -371,6 +422,7 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
             "last_capture_ago_s": round(time.time() - cap.last_time)
                                   if cap.last_time else None,
             "next_capture_in_s": max(0, round(cap.next_time - time.time())),
+            "last_level": cap.last_level,
             "exposure_ms": round(md.get("ExposureTime", 0) / 1000, 1),
             "actual_gain": round(md.get("AnalogueGain", 0), 2),
             "disk_free_mb": round(usage.free / 1e6),
@@ -442,7 +494,8 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
             if jobs and jobs[-1].state in ("starting", "encoding"):
                 return jsonify({"error": "a video is already being generated"}), 409
             job = VideoJob(src, video_dir, fps=float(body.get("fps", 10)),
-                           height=int(body.get("height", 720)), fmt=fmt)
+                           height=int(body.get("height", 720)), fmt=fmt,
+                           min_level=float(body.get("min_level", 0)))
             jobs.append(job)
             del jobs[:-JOB_KEEP]
         threading.Thread(target=job.run, daemon=True).start()

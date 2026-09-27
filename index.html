@@ -143,6 +143,7 @@
         <div class="stat"><span>Sensor</span><b id="s-sensor">–</b></div>
         <div class="stat"><span>Disk free</span><b id="s-free">–</b></div>
         <div class="stat"><span>Fills</span><b id="s-rate">–</b></div>
+        <div class="stat"><span>Brightness</span><b id="s-level">–</b></div>
         <div class="stat wide"><span>Session</span><b id="s-session">–</b></div>
       </div>
       <div class="field">
@@ -178,15 +179,23 @@
           <input id="fps" type="number" min="1" max="60" step="1" value="10" />
         </div>
       </div>
-      <div class="field">
-        <label for="height">Height</label>
-        <select id="height">
-          <option value="720" selected>720p (fast)</option>
-          <option value="1080">1080p</option>
-          <option value="480">480p (fastest)</option>
-          <option value="0">Native — no scaling</option>
-        </select>
+      <div class="field grid2">
+        <div>
+          <label for="min-level">Skip darker than</label>
+          <input id="min-level" type="number" min="0" max="255" step="1" value="0" />
+        </div>
+        <div>
+          <label for="height">Height</label>
+          <select id="height">
+            <option value="720" selected>720p (fast)</option>
+            <option value="1080">1080p</option>
+            <option value="480">480p (fastest)</option>
+            <option value="0">Native — no scaling</option>
+          </select>
+        </div>
       </div>
+      <p class="hint">Brightness runs 0 (black) to 255. 0 keeps every frame; try a value
+        a little under the daylight reading above to drop the night ones.</p>
       <div class="field"><button id="make" class="primary">Generate</button></div>
       <progress id="prog" hidden max="100" value="0"></progress>
       <div id="msg"></div>
@@ -329,6 +338,7 @@ async function poll() {
     $("s-last").textContent = s.last_capture_ago_s === null
       ? "–" : fmtAge(s.last_capture_ago_s) + " ago";
     $("s-next").textContent = fmtAge(s.next_capture_in_s);
+    $("s-level").textContent = s.last_level === null ? "–" : s.last_level;
     $("s-rate").textContent = s.mb_per_day
       ? (s.mb_per_day >= 1000 ? (s.mb_per_day / 1000).toFixed(1) + " GB/day"
                               : Math.round(s.mb_per_day) + " MB/day") : "–";
@@ -342,11 +352,15 @@ async function poll() {
     $("prog").hidden = !busy;
     if (busy) {
       $("prog").value = job.percent;
-      say(`Encoding ${job.format.toUpperCase()}… ${job.done_frames}/${job.frames} frames (${job.percent}%)`);
+      say(`Encoding ${job.format.toUpperCase()}… ${job.done_frames}/${job.frames} frames`
+          + ` (${job.percent}%)${job.skipped ? ` · ${job.skipped} too dark, skipped` : ""}`);
     } else if (job && job.state === "failed") {
       say("Failed: " + job.error, true);
-    } else if (job && job.state === "done" && $("msg").textContent.startsWith("Encoding")) {
-      say("Done: " + job.name);
+    } else if (job && job.state === "measuring") {
+      say("Measuring brightness…");
+    } else if (job && job.state === "done" && /^(Encoding|Measuring)/.test($("msg").textContent)) {
+      say(`Done: ${job.name}${job.skipped ? ` · ${job.skipped} dark frame`
+          + `${job.skipped === 1 ? "" : "s"} skipped` : ""}`);
       loadVideos();
     }
   } catch (e) { /* server restarting — the next poll retries */ }
@@ -447,7 +461,8 @@ $("make").onclick = async () => {
     await post("timelapse", {session: $("session").value,
                              fps: parseFloat($("fps").value),
                              height: parseInt($("height").value, 10),
-                             format: $("format").value});
+                             format: $("format").value,
+                             min_level: parseFloat($("min-level").value) || 0});
     say("Starting…");
   } catch (e) { say(e.message, true); }
 };

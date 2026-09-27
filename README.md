@@ -9,7 +9,8 @@ them into a timelapse video or GIF.
 - **Configurable period** between shots — seconds, minutes or hours, changeable from
   the browser while it runs.
 - **Sessions**: start a fresh one at any time, and delete old ones with their photos.
-- **Generate MP4 or GIF** on request, in the background, with a progress bar.
+- **Generate MP4 or GIF** on request, in the background, with a progress bar, and
+  optionally skip frames darker than a threshold so the nights drop out.
 - **One service**, restarts on failure, starts at boot, and a watchdog that catches the
   camera stalling without the process dying.
 
@@ -104,12 +105,19 @@ http://timelapse.local:8080/
 - **Generate**: pick a session, frames per second, MP4 or GIF, and a height (or
   "Native — no scaling" to keep the crop's true size). Encoding runs in the background;
   results appear under **Results** to download.
+- **Skip darker than**: leave out frames whose mean brightness (0 = black, 255 = white)
+  falls below the threshold — the usual way to drop the night from a multi-day run. 0
+  keeps everything. The **Brightness** reading in the Capture panel shows the level of
+  the newest still, so pick a value somewhat under the daylight figure. Each still's
+  brightness is measured as it is written and cached in `.brightness.json` inside the
+  session, so filtering costs nothing on a second run; older stills without an entry are
+  measured once (decoded at 1/8 scale) and then cached too.
 
 ### Where things land
 
 | Path | Contents |
 |---|---|
-| `captures/<time>_<WxH>/` | One directory per region ("session"), holding the stills |
+| `captures/<time>_<WxH>/` | One directory per region ("session"), holding the stills and a `.brightness.json` cache |
 | `videos/` | Generated MP4s and GIFs |
 | `data/timelapse.json` | Period, region and current session, restored on start |
 
