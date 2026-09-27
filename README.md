@@ -69,7 +69,7 @@ Install these **from apt, not pip**. The apt packages are pre-built for the Pi;
 `pip install opencv-python picamera2` compiles from source and takes hours on a Zero.
 
 ```sh
-git clone <this-repo-url> ~/pi-timelapse
+git clone https://github.com/jakubjon/rpi_timelapse.git ~/pi-timelapse
 cd ~/pi-timelapse
 ./setup/install.sh
 ```
