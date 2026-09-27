@@ -1,0 +1,3 @@
+# The Pi checks this out; keep LF everywhere so a Windows clone does not
+# rewrite every line and make diffs unreadable.
+* text=auto eol=lf
