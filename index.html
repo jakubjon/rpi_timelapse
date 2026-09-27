@@ -90,8 +90,17 @@
   li.current b { color:var(--accent); font-weight:600; }
   .sess-name { min-width:0; overflow-wrap:anywhere; }
 
-  #msg { font-size:0.78em; min-height:1.1em; margin-top:0.6em; color:var(--ok); }
-  #msg.err { color:var(--err); }
+  #msg, #msg-view { font-size:0.78em; min-height:1.1em; margin-top:0.6em;
+                    color:var(--ok); }
+  #msg.err, #msg-view.err { color:var(--err); }
+  #msg-view.pending { color:var(--pending); }
+  /* An unsaved selection is a state the page must shout about: the region is not
+     being stored until this button is pressed. */
+  @keyframes nudge { 0%,100% { box-shadow:0 0 0 0 rgba(255,200,107,0.0); }
+                     50% { box-shadow:0 0 0 4px rgba(255,200,107,0.25); } }
+  button.unsaved { background:#5c4a1f; border-color:var(--pending); color:#ffe9bd;
+                   animation:nudge 1.6s ease-in-out infinite; }
+  button.unsaved:hover:not(:disabled) { background:#6d5826; }
   progress { width:100%; height:0.55em; margin-top:0.5em; }
 
   ul { list-style:none; margin:0; padding:0; font-size:0.85em;
@@ -130,8 +139,10 @@
       <button id="pause">Stop recording</button>
       <button id="shoot">Take a picture now</button>
     </div>
-    <p class="hint">Drag on the picture to choose the region to store. Stills are saved as
-      that crop at full sensor resolution — only the preview is downscaled. Changing the
+    <div id="msg-view"></div>
+    <p class="hint"><b>Two steps:</b> drag a box on the picture, then press
+      <b>Save region</b> — until you do, the full frame keeps being stored. Saved stills
+      are that crop at full sensor resolution; only the preview is downscaled. Saving a
       region starts a new session, because one video cannot mix frame sizes.</p>
   </div>
 
@@ -243,6 +254,15 @@ let drag = null;
 
 function displayScale() { return sensor[0] / $("live").clientWidth; }
 
+// The button carries the size it would store, so it reads as the next step.
+function markPending() {
+  const b = $("save-roi");
+  b.disabled = !pending;
+  b.classList.toggle("unsaved", !!pending);
+  b.textContent = pending ? `Save region ${pending.w}×${pending.h}`
+                          : "Save dragged region";
+}
+
 function drawBox(roi, isPending) {
   const box = $("roi-box"), s = displayScale();
   if (!roi) { box.style.display = "none"; return; }
@@ -275,13 +295,14 @@ wrap.addEventListener("pointerup", ev => {
   const roi = roiFrom(drag, pointAt(ev));
   drag = null;
   if (roi.w < 64 || roi.h < 64) {            // a click, not a drag
-    pending = null; $("save-roi").disabled = true; drawBox(savedRoi, false);
+    pending = null; markPending(); drawBox(savedRoi, false); say("");
     return;
   }
   pending = roi;
   drawBox(pending, true);
-  $("save-roi").disabled = false;
-  say(`Region ${roi.w}×${roi.h} px selected — save it to start storing it`);
+  markPending();
+  say(`${roi.w}×${roi.h} px selected — not stored yet, press “Save region” →`,
+      false, "pending");
 });
 window.addEventListener("resize", () => drawBox(pending || savedRoi, !!pending));
 
@@ -306,7 +327,14 @@ function fmtAge(s) {
   return Math.floor(s / 3600) + " h " + Math.floor((s % 3600) / 60) + " min";
 }
 
-function say(text, isError) {
+// Feedback belongs where the action was: dragging and the toolbar report under the
+// picture, generating reports inside the Generate panel.
+function say(text, isError, cls) {
+  $("msg-view").textContent = text;
+  $("msg-view").className = isError ? "err" : (cls || "");
+}
+
+function sayGen(text, isError) {
   $("msg").textContent = text;
   $("msg").className = isError ? "err" : "";
 }
@@ -362,15 +390,15 @@ async function poll() {
     $("prog").hidden = !busy;
     if (busy) {
       $("prog").value = job.percent;
-      say(`Encoding ${job.format.toUpperCase()}… ${job.done_frames}/${job.frames} frames`
-          + ` (${job.percent}%)${job.skipped ? ` · ${job.skipped} too dark, skipped` : ""}`);
+      sayGen(`Encoding ${job.format.toUpperCase()}… ${job.done_frames}/${job.frames} frames`
+             + ` (${job.percent}%)${job.skipped ? ` · ${job.skipped} too dark, skipped` : ""}`);
     } else if (job && job.state === "failed") {
-      say("Failed: " + job.error, true);
+      sayGen("Failed: " + job.error, true);
     } else if (job && job.state === "measuring") {
-      say("Measuring brightness…");
+      sayGen("Measuring brightness…");
     } else if (job && job.state === "done" && /^(Encoding|Measuring)/.test($("msg").textContent)) {
-      say(`Done: ${job.name}${job.skipped ? ` · ${job.skipped} dark frame`
-          + `${job.skipped === 1 ? "" : "s"} skipped` : ""}`);
+      sayGen(`Done: ${job.name}${job.skipped ? ` · ${job.skipped} dark frame`
+             + `${job.skipped === 1 ? "" : "s"} skipped` : ""}`);
       loadVideos();
     }
   } catch (e) { /* server restarting — the next poll retries */ }
@@ -446,16 +474,16 @@ async function loadVideos() {
 $("save-roi").onclick = async () => {
   try {
     const d = await post("roi", {roi: pending});
-    pending = null; $("save-roi").disabled = true;
-    say(`Storing ${d.roi.w}×${d.roi.h} px — new session ${d.session}`);
+    pending = null; markPending();
+    say(`Now storing ${d.roi.w}×${d.roi.h} px crops — new session ${d.session}`);
   } catch (e) { say(e.message, true); }
 };
 
 $("clear-roi").onclick = async () => {
   try {
     const d = await post("roi", {roi: null});
-    pending = null; $("save-roi").disabled = true;
-    say("Storing the full frame — new session " + d.session);
+    pending = null; markPending();
+    say("Now storing the full frame — new session " + d.session);
   } catch (e) { say(e.message, true); }
 };
 
@@ -464,10 +492,10 @@ $("save-period").onclick = async () => {
   try {
     const d = await post("period", {seconds});
     periodTouched = false;
-    say("A shot every " + fmtPeriod(d.period_s)
+    sayGen("A shot every " + fmtPeriod(d.period_s)
         + (d.period_s < 10 ? " — a full-res capture takes about 4 s, so shots will"
                            + " simply follow each other as fast as the camera manages" : ""));
-  } catch (e) { say(e.message, true); }
+  } catch (e) { sayGen(e.message, true); }
 };
 
 $("pause").onclick = async () => {
@@ -501,8 +529,8 @@ $("make").onclick = async () => {
                              height: parseInt($("height").value, 10),
                              format: $("format").value,
                              min_level: parseFloat($("min-level").value) || 0});
-    say("Starting…");
-  } catch (e) { say(e.message, true); }
+    sayGen("Starting…");
+  } catch (e) { sayGen(e.message, true); }
 };
 
 refreshLive(); poll(); loadVideos();

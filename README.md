@@ -88,10 +88,12 @@ http://timelapse.local:8080/
 
 ## 5. Using it
 
-- **Region**: drag a box on the live view, then press **Save dragged region**. Stored
-  stills are that crop at native sensor pixels. **Use full frame** clears it.
-  Changing the region starts a new session directory, because one video cannot mix
-  frame sizes.
+- **Region**: two steps — drag a box on the live view, **then press Save region**.
+  Until you do, the full frame keeps being stored; while a selection is unsaved the
+  button turns amber, names the size it would store, and a line under the picture says
+  it is not stored yet. Stored stills are that crop at native sensor pixels. **Use full
+  frame** clears it. Saving a region starts a new session directory, because one video
+  cannot mix frame sizes.
 - **Period**: a number plus a unit — seconds, minutes or hours. Takes effect
   immediately and is remembered across restarts. A full-res capture takes about 4
   seconds, so below that the shots simply follow each other as fast as the camera
