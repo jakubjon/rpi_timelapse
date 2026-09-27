@@ -30,6 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
+import numpy as np
 from flask import Flask, Response, jsonify, request, send_from_directory
 from libcamera import controls as lc
 from picamera2 import Picamera2
@@ -146,11 +147,30 @@ class Capture:
         return out
 
     # ── frames ───────────────────────────────────────────────────────────────
+    def to_bgr(self, stream: str, yuv: "np.ndarray") -> "np.ndarray":
+        """YUV420 -> BGR, dropping the ISP's row padding.
+
+        Every row is padded out to a hardware stride (3280 -> 3328 on the IMX219's
+        full readout), and those pad bytes decode as a green band down the right
+        edge. Y, U and V each have to be cut back to the real width *before* OpenCV
+        sees them, or the planes no longer line up.
+        """
+        cfg = self.cam.camera_configuration()[stream]
+        w, h = cfg["size"]
+        stride = cfg["stride"]
+        if stride == w:                                   # no padding to undo
+            return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+        i420 = np.empty((h * 3 // 2, w), dtype=np.uint8)
+        i420[:h] = yuv[:h, :w]                            # luma
+        chroma = yuv[h:].reshape(h, stride // 2)          # U rows then V rows
+        i420[h:] = np.ascontiguousarray(chroma[:, :w // 2]).reshape(h // 2, w)
+        return cv2.cvtColor(i420, cv2.COLOR_YUV2BGR_I420)
+
     def preview_jpeg(self) -> bytes:
         with self.lock:
             yuv = self.cam.capture_array("lores")
             self.metadata = self.cam.capture_metadata()
-        bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+        bgr = self.to_bgr("lores", yuv)
         ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if not ok:
             raise RuntimeError("JPEG encode failed")
@@ -161,7 +181,7 @@ class Capture:
         with self.lock:
             yuv = self.cam.capture_array("main")
             self.metadata = self.cam.capture_metadata()
-        bgr = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+        bgr = self.to_bgr("main", yuv)
         if self.roi:
             r = self.roi
             bgr = bgr[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]

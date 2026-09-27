@@ -3,139 +3,198 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Timelapse — ss-camera</title>
+<title>Timelapse</title>
 <style>
-  :root { color-scheme: dark; }
-  body { font-family: -apple-system, system-ui, sans-serif;
-         background:#101418; color:#e0e0e0; margin:0; padding:0.7em; }
-  #layout { display:flex; gap:1em; align-items:flex-start;
-            justify-content:center; flex-wrap:wrap; }
-  h1 { font-size:1.05em; margin:0.2em 0 0.5em; color:#bbb; font-weight:500; }
-  h2 { font-size:0.82em; margin:0 0 0.6em; color:#8a949e; font-weight:600;
-       text-transform:uppercase; letter-spacing:0.05em; }
-  /* The live view is a small stream; the ROI drawn on it is mapped back to
-     full sensor pixels, which is what gets stored. */
-  #img-wrap { position:relative; display:inline-block; line-height:0;
-              width:min(800px, 94vw); touch-action:none; cursor:crosshair; }
-  #live { width:100%; height:auto; border-radius:6px; border:1px solid #2a2f36;
+  :root {
+    color-scheme: dark;
+    --bg:#101418; --panel:#161b21; --line:#232a32; --line-soft:#2a323c;
+    --text:#e0e0e0; --dim:#8a949e; --faint:#6c757e;
+    --accent:#4da3ff; --accent-bg:#223042; --accent-line:#2e3d52;
+    --pending:#ffc86b; --ok:#8fbf7f; --err:#e58b8b;
+  }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:var(--bg);
+         color:var(--text); margin:0; padding:0.8em; }
+
+  /* Header: the numbers that change while you watch, always in view. */
+  header { display:flex; align-items:baseline; gap:0.8em; flex-wrap:wrap;
+           margin:0 0 0.7em; }
+  header h1 { font-size:1em; margin:0; font-weight:600; letter-spacing:0.02em; }
+  .chips { display:flex; gap:0.4em; flex-wrap:wrap; font-size:0.78em; }
+  .chip { background:var(--panel); border:1px solid var(--line); border-radius:999px;
+          padding:0.18em 0.7em; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .chip b { color:#fff; font-weight:600; }
+
+  /* Picture left, controls right; the controls split into two columns on a wide
+     screen so nothing important sits below the fold. */
+  .app { display:grid; gap:1em; grid-template-columns:minmax(0,1fr) 340px;
+         align-items:start; }
+  .side { display:grid; gap:0.8em; align-content:start; }
+  @media (min-width:1500px) { .app { grid-template-columns:minmax(0,1fr) 700px; }
+                              .side { grid-template-columns:1fr 1fr; } }
+  @media (max-width:900px)  { .app { grid-template-columns:1fr; } }
+
+  #img-wrap { position:relative; display:block; line-height:0; touch-action:none;
+              cursor:crosshair; }
+  #live { width:100%; height:auto; border-radius:8px; border:1px solid var(--line);
           box-shadow:0 4px 24px rgba(0,0,0,0.4); background:#1a1f25; display:block; }
-  #roi-box { position:absolute; border:2px solid #4da3ff; background:rgba(77,163,255,0.12);
-             pointer-events:none; display:none; border-radius:2px; }
-  #roi-box.pending { border-style:dashed; border-color:#ffc86b;
+  #roi-box { position:absolute; border:2px solid var(--accent); border-radius:2px;
+             background:rgba(77,163,255,0.10); pointer-events:none; display:none; }
+  #roi-box.pending { border-style:dashed; border-color:var(--pending);
                      background:rgba(255,200,107,0.12); }
-  .panel { background:#161b21; border:1px solid #232a32; border-radius:8px;
-           padding:0.8em; width:min(320px, 94vw); }
-  .panel + .panel { margin-top:0.8em; }
-  .row { display:flex; justify-content:space-between; gap:0.6em;
-         font-size:0.85em; padding:0.15em 0; }
-  .row span:last-child { color:#fff; font-variant-numeric:tabular-nums; }
-  button { width:100%; margin-top:0.5em; padding:0.5em; font-size:0.9em;
-           background:#223042; color:#e8eef5; border:1px solid #2e3d52;
-           border-radius:6px; cursor:pointer; }
+  .hint { color:var(--faint); font-size:0.78em; margin:0.5em 0 0; }
+
+  /* Actions sit on the picture itself — where the dragging happens. */
+  .toolbar { display:flex; gap:0.5em; margin-top:0.6em; flex-wrap:wrap; }
+  /* width:auto beats the base button rule, or each one claims a whole row. */
+  .toolbar button { flex:1 1 12em; width:auto; margin:0; }
+
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+           padding:0.8em; }
+  h2 { font-size:0.75em; margin:0 0 0.7em; color:var(--dim); font-weight:600;
+       text-transform:uppercase; letter-spacing:0.06em; }
+
+  /* Stats as label/value pairs, two per row where there is room. */
+  .stats { display:grid; grid-template-columns:1fr 1fr; gap:0.45em 0.9em; }
+  .stat { min-width:0; }
+  .stat span { display:block; font-size:0.7em; color:var(--faint);
+               text-transform:uppercase; letter-spacing:0.04em; }
+  .stat b { font-size:0.9em; font-weight:600; font-variant-numeric:tabular-nums;
+            overflow-wrap:anywhere; }
+  .stat.wide { grid-column:1 / -1; }
+
+  button { width:100%; padding:0.5em; font-size:0.88em; background:var(--accent-bg);
+           color:#e8eef5; border:1px solid var(--accent-line); border-radius:6px;
+           cursor:pointer; }
   button:hover:not(:disabled) { background:#2b3d54; }
-  button:disabled { opacity:0.5; cursor:default; }
+  button:disabled { opacity:0.45; cursor:default; }
   button.primary { background:#2b5c8a; border-color:#3a7ab5; }
   button.primary:hover:not(:disabled) { background:#336ba0; }
-  label { display:block; font-size:0.8em; color:#8a949e; margin-top:0.5em; }
-  input, select { width:100%; box-sizing:border-box; margin-top:0.2em; padding:0.4em;
-                  background:#0f1318; color:#e0e0e0; border:1px solid #2a323c;
-                  border-radius:5px; font-size:0.9em; }
-  .two { display:flex; gap:0.5em; }
-  #msg { font-size:0.8em; min-height:1.2em; margin-top:0.5em; color:#8fbf7f; }
-  #msg.err { color:#e58b8b; }
-  progress { width:100%; height:0.6em; margin-top:0.5em; }
-  ul { list-style:none; margin:0.3em 0 0; padding:0; font-size:0.85em; }
-  li { padding:0.2em 0; display:flex; justify-content:space-between; gap:0.5em; }
-  a { color:#7fb3e5; }
-  .muted { color:#6c757e; font-size:0.78em; }
+
+  .field { margin-top:0.6em; }
+  label { display:block; font-size:0.72em; color:var(--faint); margin-bottom:0.2em;
+          text-transform:uppercase; letter-spacing:0.04em; }
+  input, select { width:100%; padding:0.42em; background:#0f1318; color:var(--text);
+                  border:1px solid var(--line-soft); border-radius:5px; font-size:0.88em; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0.5em; }
+  .inline { display:grid; grid-template-columns:1fr auto; gap:0.5em; align-items:end; }
+  .inline button { width:auto; padding:0.42em 0.9em; }
+
+  #msg { font-size:0.78em; min-height:1.1em; margin-top:0.6em; color:var(--ok); }
+  #msg.err { color:var(--err); }
+  progress { width:100%; height:0.55em; margin-top:0.5em; }
+
+  ul { list-style:none; margin:0; padding:0; font-size:0.85em;
+       max-height:11em; overflow:auto; }
+  li { display:flex; justify-content:space-between; gap:0.6em; padding:0.25em 0;
+       border-bottom:1px solid var(--line); }
+  li:last-child { border-bottom:0; }
+  a { color:#7fb3e5; text-decoration:none; overflow-wrap:anywhere; }
+  a:hover { text-decoration:underline; }
+  .muted { color:var(--faint); font-size:0.78em; white-space:nowrap; }
 </style>
 </head>
 <body>
-<div id="layout">
+
+<header>
+  <h1>Timelapse</h1>
+  <div class="chips">
+    <span class="chip">exposure <b id="c-exp">–</b></span>
+    <span class="chip">gain <b id="c-gain">–</b></span>
+    <span class="chip">next shot <b id="c-next">–</b></span>
+    <span class="chip">stored <b id="c-count">–</b></span>
+  </div>
+</header>
+
+<div class="app">
   <div>
-    <h1>Live view <span class="muted" id="live-meta"></span></h1>
     <div id="img-wrap">
       <img id="live" alt="camera live view" />
       <div id="roi-box"></div>
     </div>
-    <p class="muted">Drag on the picture to choose the region to store. Saved stills are
-      that region at full sensor resolution — the preview is only downscaled for viewing.</p>
-  </div>
-
-  <div>
-    <div class="panel">
-      <h2>Stored region</h2>
-      <div class="row"><span>Sensor</span><span id="s-sensor">–</span></div>
-      <div class="row"><span>Region</span><span id="s-roi">full frame</span></div>
-      <div class="row"><span>Stored size</span><span id="s-crop">–</span></div>
+    <div class="toolbar">
       <button id="save-roi" class="primary" disabled>Save dragged region</button>
       <button id="clear-roi">Use full frame</button>
-      <p class="muted">Changing the region starts a new session, because one video
-        cannot mix frame sizes.</p>
-    </div>
-
-    <div class="panel">
-      <h2>Capture</h2>
-      <div class="row"><span>Session</span><span id="s-session">–</span></div>
-      <div class="row"><span>Photos</span><span id="s-count">–</span></div>
-      <div class="row"><span>Size on disk</span><span id="s-size">–</span></div>
-      <div class="row"><span>Disk free</span><span id="s-free">–</span></div>
-      <div class="row"><span>Last shot</span><span id="s-last">–</span></div>
-      <div class="row"><span>Next shot in</span><span id="s-next">–</span></div>
-      <div class="row"><span>Exposure</span><span id="s-exp">–</span></div>
-      <div class="row"><span>Gain</span><span id="s-gain">–</span></div>
-      <label for="period">Period between shots (minutes)</label>
-      <input id="period" type="number" min="0.25" max="1440" step="0.25" />
-      <button id="save-period">Save period</button>
       <button id="shoot">Take a picture now</button>
     </div>
+    <p class="hint">Drag on the picture to choose the region to store. Stills are saved as
+      that crop at full sensor resolution — only the preview is downscaled. Changing the
+      region starts a new session, because one video cannot mix frame sizes.</p>
+  </div>
 
-    <div class="panel">
-      <h2>Generate</h2>
-      <label for="session">Session</label>
-      <select id="session"></select>
-      <div class="two">
-        <div style="flex:1">
-          <label for="fps">Frames / s</label>
-          <input id="fps" type="number" min="1" max="60" step="1" value="10" />
+  <aside class="side">
+    <section class="panel">
+      <h2>Capture</h2>
+      <div class="stats">
+        <div class="stat"><span>Region</span><b id="s-roi">full frame</b></div>
+        <div class="stat"><span>Stored size</span><b id="s-crop">–</b></div>
+        <div class="stat"><span>Photos</span><b id="s-count">–</b></div>
+        <div class="stat"><span>On disk</span><b id="s-size">–</b></div>
+        <div class="stat"><span>Last shot</span><b id="s-last">–</b></div>
+        <div class="stat"><span>Next shot</span><b id="s-next">–</b></div>
+        <div class="stat"><span>Sensor</span><b id="s-sensor">–</b></div>
+        <div class="stat"><span>Disk free</span><b id="s-free">–</b></div>
+        <div class="stat wide"><span>Session</span><b id="s-session">–</b></div>
+      </div>
+      <div class="field inline">
+        <div>
+          <label for="period">Minutes between shots</label>
+          <input id="period" type="number" min="0.25" max="1440" step="0.25" />
         </div>
-        <div style="flex:1">
+        <button id="save-period">Save</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Generate</h2>
+      <div>
+        <label for="session">Session</label>
+        <select id="session"></select>
+      </div>
+      <div class="field grid2">
+        <div>
           <label for="format">Format</label>
           <select id="format">
             <option value="mp4" selected>MP4</option>
             <option value="gif">GIF</option>
           </select>
         </div>
+        <div>
+          <label for="fps">Frames / s</label>
+          <input id="fps" type="number" min="1" max="60" step="1" value="10" />
+        </div>
       </div>
-      <label for="height">Height</label>
-      <select id="height">
-        <option value="720" selected>720p (fast)</option>
-        <option value="1080">1080p</option>
-        <option value="480">480p (fastest)</option>
-        <option value="0">Native — no scaling</option>
-      </select>
-      <button id="make">Generate</button>
+      <div class="field">
+        <label for="height">Height</label>
+        <select id="height">
+          <option value="720" selected>720p (fast)</option>
+          <option value="1080">1080p</option>
+          <option value="480">480p (fastest)</option>
+          <option value="0">Native — no scaling</option>
+        </select>
+      </div>
+      <div class="field"><button id="make" class="primary">Generate</button></div>
       <progress id="prog" hidden max="100" value="0"></progress>
       <div id="msg"></div>
-    </div>
+    </section>
 
-    <div class="panel">
+    <section class="panel">
       <h2>Results</h2>
       <ul id="videos"><li class="muted">none yet</li></ul>
-    </div>
-  </div>
+    </section>
+  </aside>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
 let sensor = [3280, 2464];       // replaced by /status
-let savedRoi = null;             // the ROI the server is using
-let pending = null;              // the ROI just dragged, not saved yet
+let savedRoi = null;             // the region the server is using
+let pending = null;              // just dragged, not saved yet
 let periodTouched = false, sessionTouched = false;
 $("period").addEventListener("input", () => { periodTouched = true; });
 $("session").addEventListener("change", () => { sessionTouched = true; });
 
-// ── live view: one request at a time, so a slow frame cannot stack up ────────
+// ── live view: one request in flight, so a slow frame cannot stack up ────────
 function refreshLive() {
   const img = $("live"), next = new Image();
   next.onload = () => { img.src = next.src; setTimeout(refreshLive, 2000); };
@@ -143,7 +202,7 @@ function refreshLive() {
   next.src = "preview.jpg?t=" + Date.now();
 }
 
-// ── ROI drag: display px -> sensor px ───────────────────────────────────────
+// ── region drag: display px -> sensor px ────────────────────────────────────
 const wrap = $("img-wrap");
 let drag = null;
 
@@ -220,10 +279,15 @@ async function poll() {
     savedRoi = s.roi;
     if (!pending) drawBox(savedRoi, false);
 
+    $("c-exp").textContent = s.exposure_ms + " ms";
+    $("c-gain").textContent = s.actual_gain + "×";
+    $("c-next").textContent = fmtAge(s.next_capture_in_s);
+    $("c-count").textContent = s.photo_count;
+
     $("s-sensor").textContent = sensor[0] + "×" + sensor[1];
     $("s-roi").textContent = s.roi
       ? `${s.roi.w}×${s.roi.h} at ${s.roi.x},${s.roi.y}` : "full frame";
-    $("s-crop").textContent = s.crop_size[0] + "×" + s.crop_size[1] + " px";
+    $("s-crop").textContent = s.crop_size[0] + "×" + s.crop_size[1];
     $("s-session").textContent = s.session;
     $("s-count").textContent = s.photo_count;
     $("s-size").textContent = s.photos_mb + " MB";
@@ -231,9 +295,6 @@ async function poll() {
     $("s-last").textContent = s.last_capture_ago_s === null
       ? "–" : fmtAge(s.last_capture_ago_s) + " ago";
     $("s-next").textContent = fmtAge(s.next_capture_in_s);
-    $("s-exp").textContent = s.exposure_ms + " ms";
-    $("s-gain").textContent = s.actual_gain + "×";
-    $("live-meta").textContent = s.exposure_ms + " ms · gain " + s.actual_gain + "×";
     if (!periodTouched) $("period").value = s.period_min;
     fillSessions(s.sessions, s.session);
     if (s.error) say(s.error, true);
@@ -256,9 +317,9 @@ async function poll() {
 
 function fillSessions(sessions, current) {
   const sel = $("session");
-  const want = sessions.map(s => `${s.name}|${s.count}`).join(",");
-  if (sel.dataset.key === want) return;         // don't fight the user's choice
-  sel.dataset.key = want;
+  const key = sessions.map(s => `${s.name}|${s.count}`).join(",");
+  if (sel.dataset.key === key) return;          // don't fight the user's choice
+  sel.dataset.key = key;
   const keep = sessionTouched ? sel.value : current;
   sel.innerHTML = sessions.map(s =>
     `<option value="${s.name}">${s.name} — ${s.count} shot${s.count === 1 ? "" : "s"}` +
