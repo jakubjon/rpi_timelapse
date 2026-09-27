@@ -45,6 +45,7 @@ SENSORS = {"v2.1": (3280, 2464),      # IMX219, Camera Module v2.1
 LORES_SIZE = (800, 600)      # live view stream; 4:3 like the sensor
 MIN_ROI = 64                 # px, in sensor coordinates
 LEVELS_FILE = ".brightness.json"   # cached mean brightness per still, per session
+VIDEO_SUFFIXES = (".mp4", ".gif")
 MIN_PERIOD_S = 1             # a full-res capture takes ~4 s, so this is a floor, not a rate
 STALL_LIMIT_S = 45           # a camera call taking longer than this means the ISP wedged
 JOB_KEEP = 10                # finished jobs kept in the log
@@ -104,6 +105,7 @@ class Capture:
         self.period_s = period_s
         self.roi: dict | None = None          # {x, y, w, h} in sensor px; None = full frame
         self.session: str = ""
+        self.paused = False                   # recording stopped; the app keeps running
         self.lock = threading.Lock()          # one camera consumer at a time
         self.wake = threading.Event()         # period change / capture now
         self.last_path: Path | None = None
@@ -135,23 +137,39 @@ class Capture:
         elif "period_min" in saved:                       # state from before seconds
             self.period_s = float(saved["period_min"]) * 60
         self.roi = saved.get("roi")
+        self.paused = bool(saved.get("paused", False))
         self.session = saved.get("session") or self.new_session()
 
     def save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps(
-            {"period_s": self.period_s, "roi": self.roi, "session": self.session},
-            indent=1))
+            {"period_s": self.period_s, "roi": self.roi, "session": self.session,
+             "paused": self.paused}, indent=1))
 
     def new_session(self) -> str:
-        """A directory per ROI: one video cannot mix frame sizes."""
+        """A directory per ROI: one video cannot mix frame sizes.
+
+        An unused session is dropped rather than left behind — changing the region
+        twice, or pressing "start new session" on an empty one, otherwise litters
+        the list with directories that never held a photo.
+        """
+        old = self.base_dir / self.session if self.session else None
         w, h = self.crop_size()
         self.session = f"{datetime.now():%Y%m%d_%H%M%S}_{w}x{h}"
         (self.base_dir / self.session).mkdir(parents=True, exist_ok=True)
+        if old is not None and old.is_dir() and old.name != self.session \
+                and not any(old.glob("*.jpg")):
+            shutil.rmtree(old, ignore_errors=True)
         return self.session
 
     def crop_size(self) -> tuple[int, int]:
         return (self.roi["w"], self.roi["h"]) if self.roi else self.sensor_size
+
+    def set_paused(self, paused: bool) -> None:
+        """Stop or resume recording. Resuming shoots at once, then on the period."""
+        self.paused = paused
+        self.save_state()
+        self.wake.set()
 
     def set_period(self, seconds: float) -> None:
         self.period_s = seconds
@@ -248,7 +266,14 @@ class Capture:
             bgr = bgr[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
         out_dir = self.base_dir / self.session
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / datetime.now().strftime("%Y%m%d_%H%M%S.jpg")
+        # Second resolution collides when a manual shot lands in the same second as a
+        # scheduled one; the suffix keeps both, and still sorts after the plain name.
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = out_dir / f"{stamp}.jpg"
+        for n in range(2, 100):
+            if not path.exists():
+                break
+            path = out_dir / f"{stamp}_{n}.jpg"
         if not cv2.imwrite(str(path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 92]):
             raise RuntimeError(f"could not write {path}")
         # Measure here, off the array already in hand, so generating a video later
@@ -272,6 +297,11 @@ class Capture:
 
     def capture_loop(self) -> None:
         while True:
+            if self.paused:
+                self.next_time = 0.0
+                self.wake.wait(timeout=5)
+                self.wake.clear()
+                continue
             try:
                 self.capture_still()
             except Exception as exc:                       # keep the loop alive
@@ -421,7 +451,9 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
             "last_photo": cap.last_path.name if cap.last_path else None,
             "last_capture_ago_s": round(time.time() - cap.last_time)
                                   if cap.last_time else None,
-            "next_capture_in_s": max(0, round(cap.next_time - time.time())),
+            "paused": cap.paused,
+            "next_capture_in_s": None if cap.paused
+                                 else max(0, round(cap.next_time - time.time())),
             "last_level": cap.last_level,
             "exposure_ms": round(md.get("ExposureTime", 0) / 1000, 1),
             "actual_gain": round(md.get("AnalogueGain", 0), 2),
@@ -444,15 +476,27 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
         cap.save_state()
         return jsonify({"session": cap.session})
 
+    @app.post("/pause")
+    def set_paused():
+        cap.set_paused(bool((request.json or {}).get("paused", True)))
+        return jsonify({"paused": cap.paused, "session": cap.session})
+
     @app.post("/session/delete")
     def delete_session():
         name = (request.json or {}).get("name", "")
         try:
-            return jsonify({"deleted": name, "session": cap.delete_session(name)})
+            current = cap.delete_session(name)
         except FileNotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        # Its videos are named after it, and outlive it as files nothing refers to.
+        removed = 0
+        for v in video_dir.glob(f"{name}_*"):
+            if v.suffix in VIDEO_SUFFIXES:
+                v.unlink(missing_ok=True)
+                removed += 1
+        return jsonify({"deleted": name, "session": current, "removed_videos": removed})
 
     @app.post("/roi")
     def set_roi():
@@ -503,7 +547,7 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
 
     @app.get("/videos")
     def list_videos():
-        vids = sorted([p for p in video_dir.glob("*") if p.suffix in (".mp4", ".gif")],
+        vids = sorted([p for p in video_dir.glob("*") if p.suffix in VIDEO_SUFFIXES],
                       key=lambda p: p.stat().st_mtime, reverse=True)
         return jsonify([{"name": v.name, "mb": round(v.stat().st_size / 1e6, 1),
                          "mtime": v.stat().st_mtime} for v in vids])
@@ -511,6 +555,17 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
     @app.get("/videos/<name>")
     def get_video(name: str):
         return send_from_directory(video_dir, name)
+
+    @app.post("/videos/delete")
+    def delete_video():
+        name = (request.json or {}).get("name", "")
+        if "/" in name or ".." in name or Path(name).suffix not in VIDEO_SUFFIXES:
+            return jsonify({"error": f"bad file name: {name}"}), 400
+        target = video_dir / name
+        if not target.is_file():
+            return jsonify({"error": f"no such file: {name}"}), 404
+        target.unlink()
+        return jsonify({"deleted": name})
 
     return app
 

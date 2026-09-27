@@ -8,7 +8,8 @@ them into a timelapse video or GIF.
   resolution** — the preview is only small for viewing, the stored pixels are native.
 - **Configurable period** between shots — seconds, minutes or hours, changeable from
   the browser while it runs.
-- **Sessions**: start a fresh one at any time, and delete old ones with their photos.
+- **Sessions**: start a fresh one at any time, stop recording when a run is finished,
+  and delete old ones with their photos and generated videos.
 - **Generate MP4 or GIF** on request, in the background, with a progress bar, and
   optionally skip frames darker than a threshold so the nights drop out.
 - **One service**, restarts on failure, starts at boot, and a watchdog that catches the
@@ -99,9 +100,17 @@ http://timelapse.local:8080/
 - **Take a picture now**: one extra still, outside the schedule.
 - **Sessions**: **Start new session** begins a fresh directory without changing the
   region — useful to separate one run from the next. The Sessions panel lists them all
-  with their shot count and size; **✕** deletes a session and its photos after a
-  confirmation. Deleting the one being recorded is allowed: a new session starts
-  immediately in its place.
+  with their shot count and size; **✕** deletes a session, its photos **and the videos
+  generated from it**, after a confirmation. Deleting the one being recorded is allowed:
+  a new session starts immediately in its place. A session that never received a photo
+  is dropped when you leave it, so the list does not fill with empty directories.
+- **Stop recording** ends the current run: no more scheduled stills, while the app, the
+  live view and **Take a picture now** all keep working. The button then reads **Resume
+  recording**, which shoots immediately and carries on at the period. Being stopped
+  survives a restart, so the Pi will not quietly start filling the card again after a
+  power cut.
+- **Results**: each generated file has its own **✕** to delete it, for the ones whose
+  session is long gone.
 - **Generate**: pick a session, frames per second, MP4 or GIF, and a height (or
   "Native — no scaling" to keep the crop's true size). Encoding runs in the background;
   results appear under **Results** to download.
@@ -118,7 +127,7 @@ http://timelapse.local:8080/
 | Path | Contents |
 |---|---|
 | `captures/<time>_<WxH>/` | One directory per region ("session"), holding the stills and a `.brightness.json` cache |
-| `videos/` | Generated MP4s and GIFs |
+| `videos/` | Generated MP4s and GIFs, named `<session>_<time>.<ext>` so they can be cleaned up with their session |
 | `data/timelapse.json` | Period, region and current session, restored on start |
 
 All three are git-ignored.
