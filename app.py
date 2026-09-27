@@ -22,10 +22,12 @@ Usage:
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -42,6 +44,8 @@ SENSORS = {"v2.1": (3280, 2464),      # IMX219, Camera Module v2.1
 
 LORES_SIZE = (800, 600)      # live view stream; 4:3 like the sensor
 MIN_ROI = 64                 # px, in sensor coordinates
+MIN_PERIOD_S = 1             # a full-res capture takes ~4 s, so this is a floor, not a rate
+STALL_LIMIT_S = 45           # a camera call taking longer than this means the ISP wedged
 JOB_KEEP = 10                # finished jobs kept in the log
 
 
@@ -71,12 +75,12 @@ class Capture:
     """Owns the camera: interval ROI stills, on-demand stills, preview frames."""
 
     def __init__(self, base_dir: Path, sensor_size, gain: float,
-                 period_min: float, state_path: Path):
+                 period_s: float, state_path: Path):
         self.base_dir = base_dir
         self.sensor_size = sensor_size
         self.gain = gain
         self.state_path = state_path
-        self.period_min = period_min
+        self.period_s = period_s
         self.roi: dict | None = None          # {x, y, w, h} in sensor px; None = full frame
         self.session: str = ""
         self.lock = threading.Lock()          # one camera consumer at a time
@@ -86,6 +90,7 @@ class Capture:
         self.last_error: str | None = None
         self.next_time: float = 0.0
         self.metadata: dict = {}
+        self.busy_since: float | None = None   # set while a camera call is in flight
 
         self.cam = Picamera2()
         self.cam.configure(self.cam.create_video_configuration(
@@ -103,14 +108,17 @@ class Capture:
             saved = json.loads(self.state_path.read_text())
         except (OSError, ValueError):
             saved = {}
-        self.period_min = float(saved.get("period_min", self.period_min))
+        if "period_s" in saved:
+            self.period_s = float(saved["period_s"])
+        elif "period_min" in saved:                       # state from before seconds
+            self.period_s = float(saved["period_min"]) * 60
         self.roi = saved.get("roi")
         self.session = saved.get("session") or self.new_session()
 
     def save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps(
-            {"period_min": self.period_min, "roi": self.roi, "session": self.session},
+            {"period_s": self.period_s, "roi": self.roi, "session": self.session},
             indent=1))
 
     def new_session(self) -> str:
@@ -123,8 +131,8 @@ class Capture:
     def crop_size(self) -> tuple[int, int]:
         return (self.roi["w"], self.roi["h"]) if self.roi else self.sensor_size
 
-    def set_period(self, minutes: float) -> None:
-        self.period_min = minutes
+    def set_period(self, seconds: float) -> None:
+        self.period_s = seconds
         self.save_state()
         self.wake.set()                       # re-time the pending sleep
 
@@ -132,6 +140,20 @@ class Capture:
         self.roi = roi
         self.new_session()
         self.save_state()
+
+    def delete_session(self, name: str) -> str | None:
+        """Remove a session directory and its stills. Returns the current session
+        afterwards, starting a fresh one if the deleted session was the live one."""
+        if "/" in name or ".." in name:
+            raise ValueError(f"bad session name: {name}")
+        target = self.base_dir / name
+        if not target.is_dir():
+            raise FileNotFoundError(f"no such session: {name}")
+        shutil.rmtree(target)
+        if name == self.session:
+            self.new_session()
+            self.save_state()
+        return self.session
 
     def sessions(self) -> list[dict]:
         out = []
@@ -147,6 +169,23 @@ class Capture:
         return out
 
     # ── frames ───────────────────────────────────────────────────────────────
+    @contextmanager
+    def camera(self):
+        """Exclusive camera access, timed so the watchdog can see a wedged call.
+
+        The vc4 pipeline occasionally never returns a frame ("Camera frontend has
+        timed out!"). The call blocks forever holding this lock, which freezes the
+        capture loop and the live view alike, and the process stays alive so
+        systemd sees nothing wrong — exactly the silent stall that a plain
+        Restart=always cannot catch.
+        """
+        with self.lock:
+            self.busy_since = time.time()
+            try:
+                yield self.cam
+            finally:
+                self.busy_since = None
+
     def to_bgr(self, stream: str, yuv: "np.ndarray") -> "np.ndarray":
         """YUV420 -> BGR, dropping the ISP's row padding.
 
@@ -167,9 +206,9 @@ class Capture:
         return cv2.cvtColor(i420, cv2.COLOR_YUV2BGR_I420)
 
     def preview_jpeg(self) -> bytes:
-        with self.lock:
-            yuv = self.cam.capture_array("lores")
-            self.metadata = self.cam.capture_metadata()
+        with self.camera() as cam:
+            yuv = cam.capture_array("lores")
+            self.metadata = cam.capture_metadata()
         bgr = self.to_bgr("lores", yuv)
         ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if not ok:
@@ -178,9 +217,9 @@ class Capture:
 
     def capture_still(self) -> Path:
         """Full-res frame, cropped to the ROI, saved at native pixels."""
-        with self.lock:
-            yuv = self.cam.capture_array("main")
-            self.metadata = self.cam.capture_metadata()
+        with self.camera() as cam:
+            yuv = cam.capture_array("main")
+            self.metadata = cam.capture_metadata()
         bgr = self.to_bgr("main", yuv)
         if self.roi:
             r = self.roi
@@ -193,15 +232,25 @@ class Capture:
         self.last_path, self.last_time, self.last_error = path, time.time(), None
         return path
 
+    def watchdog(self, limit_s: float) -> None:
+        """Bail out of the process if a camera call wedges; systemd restarts us."""
+        while True:
+            time.sleep(5)
+            started = self.busy_since
+            if started is not None and time.time() - started > limit_s:
+                print(f"camera call stuck for {time.time() - started:.0f}s "
+                      f"(limit {limit_s}s) — exiting for a restart", flush=True)
+                os._exit(1)
+
     def capture_loop(self) -> None:
         while True:
             try:
                 self.capture_still()
             except Exception as exc:                       # keep the loop alive
                 self.last_error = f"{type(exc).__name__}: {exc}"
-            self.next_time = time.time() + self.period_min * 60
+            self.next_time = time.time() + self.period_s
             while time.time() < self.next_time:
-                self.wake.wait(timeout=min(self.next_time - time.time(), 30))
+                self.wake.wait(timeout=min(self.next_time - time.time(), 5))
                 if self.wake.is_set():                     # period/ROI changed
                     self.wake.clear()
                     break
@@ -305,8 +354,11 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
         current = next((s for s in sessions if s["current"]), None)
         with job_lock:
             job = jobs[-1].as_dict() if jobs else None
+        photos = current["count"] if current else 0
+        mb_each = (current["mb"] / photos) if photos else 0
         return jsonify({
-            "period_min": cap.period_min,
+            "period_s": cap.period_s,
+            "mb_per_day": round(mb_each * 86400 / cap.period_s, 1),
             "gain": cap.gain,
             "sensor_size": list(cap.sensor_size),
             "crop_size": list(cap.crop_size()),
@@ -328,11 +380,27 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
 
     @app.post("/period")
     def set_period():
-        minutes = float((request.json or {}).get("minutes", 0))
-        if not 0.25 <= minutes <= 24 * 60:
-            return jsonify({"error": "minutes must be 0.25–1440"}), 400
-        cap.set_period(minutes)
-        return jsonify({"period_min": cap.period_min})
+        seconds = float((request.json or {}).get("seconds", 0))
+        if not MIN_PERIOD_S <= seconds <= 24 * 3600:
+            return jsonify({"error": f"period must be {MIN_PERIOD_S}s–24h"}), 400
+        cap.set_period(seconds)
+        return jsonify({"period_s": cap.period_s})
+
+    @app.post("/session/new")
+    def new_session():
+        cap.new_session()
+        cap.save_state()
+        return jsonify({"session": cap.session})
+
+    @app.post("/session/delete")
+    def delete_session():
+        name = (request.json or {}).get("name", "")
+        try:
+            return jsonify({"deleted": name, "session": cap.delete_session(name)})
+        except FileNotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
 
     @app.post("/roi")
     def set_roi():
@@ -403,7 +471,10 @@ def main() -> None:
     parser.add_argument("--state", default=str(ROOT / "data" / "timelapse.json"),
                         help="Where period, ROI and current session are persisted")
     parser.add_argument("--period", type=float, default=15.0,
-                        help="Default minutes between stills (web UI overrides)")
+                        help="Default MINUTES between stills (the web UI sets seconds "
+                             "and its value, once set, wins over this)")
+    parser.add_argument("--stall-limit", type=float, default=STALL_LIMIT_S,
+                        help="Exit for a restart if a camera call blocks this long")
     parser.add_argument("--gain", type=float, default=3.0,
                         help="Fixed analogue gain; exposure time stays automatic")
     parser.add_argument("--camera", default="v2.1", choices=sorted(SENSORS),
@@ -411,9 +482,10 @@ def main() -> None:
     args = parser.parse_args()
 
     cap = Capture(Path(args.captures), SENSORS[args.camera], args.gain,
-                  args.period, Path(args.state))
+                  args.period * 60, Path(args.state))
     cap.load_state()
     threading.Thread(target=cap.capture_loop, daemon=True).start()
+    threading.Thread(target=cap.watchdog, args=(args.stall_limit,), daemon=True).start()
 
     app = create_app(cap, Path(args.video_dir))
     app.run(host="0.0.0.0", port=args.port, threaded=True)

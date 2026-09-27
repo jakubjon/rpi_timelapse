@@ -77,8 +77,14 @@
   input, select { width:100%; padding:0.42em; background:#0f1318; color:var(--text);
                   border:1px solid var(--line-soft); border-radius:5px; font-size:0.88em; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0.5em; }
-  .inline { display:grid; grid-template-columns:1fr auto; gap:0.5em; align-items:end; }
-  .inline button { width:auto; padding:0.42em 0.9em; }
+  .period-row { display:grid; grid-template-columns:1fr 1fr auto; gap:0.5em; }
+  .period-row button { width:auto; padding:0.42em 0.9em; }
+  /* Destructive action: quiet until pointed at. */
+  .del { width:auto; padding:0.05em 0.45em; font-size:0.9em; line-height:1.3;
+         background:none; border-color:transparent; color:var(--faint); }
+  .del:hover { background:#3a2226; border-color:#5d2f35; color:var(--err); }
+  li.current b { color:var(--accent); font-weight:600; }
+  .sess-name { min-width:0; overflow-wrap:anywhere; }
 
   #msg { font-size:0.78em; min-height:1.1em; margin-top:0.6em; color:var(--ok); }
   #msg.err { color:var(--err); }
@@ -101,6 +107,7 @@
   <div class="chips">
     <span class="chip">exposure <b id="c-exp">–</b></span>
     <span class="chip">gain <b id="c-gain">–</b></span>
+    <span class="chip">every <b id="c-period">–</b></span>
     <span class="chip">next shot <b id="c-next">–</b></span>
     <span class="chip">stored <b id="c-count">–</b></span>
   </div>
@@ -115,6 +122,7 @@
     <div class="toolbar">
       <button id="save-roi" class="primary" disabled>Save dragged region</button>
       <button id="clear-roi">Use full frame</button>
+      <button id="new-session">Start new session</button>
       <button id="shoot">Take a picture now</button>
     </div>
     <p class="hint">Drag on the picture to choose the region to store. Stills are saved as
@@ -134,14 +142,20 @@
         <div class="stat"><span>Next shot</span><b id="s-next">–</b></div>
         <div class="stat"><span>Sensor</span><b id="s-sensor">–</b></div>
         <div class="stat"><span>Disk free</span><b id="s-free">–</b></div>
+        <div class="stat"><span>Fills</span><b id="s-rate">–</b></div>
         <div class="stat wide"><span>Session</span><b id="s-session">–</b></div>
       </div>
-      <div class="field inline">
-        <div>
-          <label for="period">Minutes between shots</label>
-          <input id="period" type="number" min="0.25" max="1440" step="0.25" />
+      <div class="field">
+        <label for="period">Between shots</label>
+        <div class="period-row">
+          <input id="period" type="number" min="1" step="1" />
+          <select id="period-unit">
+            <option value="1">seconds</option>
+            <option value="60" selected>minutes</option>
+            <option value="3600">hours</option>
+          </select>
+          <button id="save-period">Save</button>
         </div>
-        <button id="save-period">Save</button>
       </div>
     </section>
 
@@ -179,6 +193,11 @@
     </section>
 
     <section class="panel">
+      <h2>Sessions</h2>
+      <ul id="sessions"><li class="muted">none yet</li></ul>
+    </section>
+
+    <section class="panel">
       <h2>Results</h2>
       <ul id="videos"><li class="muted">none yet</li></ul>
     </section>
@@ -191,6 +210,7 @@ let sensor = [3280, 2464];       // replaced by /status
 let savedRoi = null;             // the region the server is using
 let pending = null;              // just dragged, not saved yet
 let periodTouched = false, sessionTouched = false;
+$("period-unit").addEventListener("change", () => { periodTouched = true; });
 $("period").addEventListener("input", () => { periodTouched = true; });
 $("session").addEventListener("change", () => { sessionTouched = true; });
 
@@ -251,6 +271,19 @@ wrap.addEventListener("pointerup", ev => {
 window.addEventListener("resize", () => drawBox(pending || savedRoi, !!pending));
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+// Show a period in whatever unit keeps it a round-ish number.
+function fmtPeriod(sec) {
+  if (sec < 60) return sec + " s";
+  if (sec < 3600) return +(sec / 60).toFixed(2) + " min";
+  return +(sec / 3600).toFixed(2) + " h";
+}
+
+function showPeriod(sec) {
+  const unit = sec < 60 ? 1 : (sec < 3600 ? 60 : 3600);
+  $("period-unit").value = String(unit);
+  $("period").value = +(sec / unit).toFixed(unit === 1 ? 0 : 2);
+}
+
 function fmtAge(s) {
   if (s === null || s === undefined) return "–";
   if (s < 60) return s + " s";
@@ -282,6 +315,7 @@ async function poll() {
     $("c-exp").textContent = s.exposure_ms + " ms";
     $("c-gain").textContent = s.actual_gain + "×";
     $("c-next").textContent = fmtAge(s.next_capture_in_s);
+    $("c-period").textContent = fmtPeriod(s.period_s);
     $("c-count").textContent = s.photo_count;
 
     $("s-sensor").textContent = sensor[0] + "×" + sensor[1];
@@ -295,8 +329,12 @@ async function poll() {
     $("s-last").textContent = s.last_capture_ago_s === null
       ? "–" : fmtAge(s.last_capture_ago_s) + " ago";
     $("s-next").textContent = fmtAge(s.next_capture_in_s);
-    if (!periodTouched) $("period").value = s.period_min;
+    $("s-rate").textContent = s.mb_per_day
+      ? (s.mb_per_day >= 1000 ? (s.mb_per_day / 1000).toFixed(1) + " GB/day"
+                              : Math.round(s.mb_per_day) + " MB/day") : "–";
+    if (!periodTouched) showPeriod(s.period_s);
     fillSessions(s.sessions, s.session);
+    fillSessionList(s.sessions);
     if (s.error) say(s.error, true);
 
     const job = s.job, busy = job && (job.state === "encoding" || job.state === "starting");
@@ -327,6 +365,32 @@ function fillSessions(sessions, current) {
   if (sessions.some(s => s.name === keep)) sel.value = keep;
 }
 
+function fillSessionList(sessions) {
+  const ul = $("sessions");
+  const key = sessions.map(s => `${s.name}|${s.count}|${s.mb}|${s.current}`).join(",");
+  if (ul.dataset.key === key) return;
+  ul.dataset.key = key;
+  ul.innerHTML = sessions.length ? sessions.map(s =>
+    `<li class="${s.current ? "current" : ""}">` +
+    `<span class="sess-name">${s.current ? "<b>" : ""}${s.name}${s.current ? "</b>" : ""}` +
+    `<br><span class="muted">${s.count} shot${s.count === 1 ? "" : "s"} · ${s.mb} MB` +
+    `${s.current ? " · recording" : ""}</span></span>` +
+    `<button class="del" data-name="${s.name}" data-count="${s.count}" ` +
+    `title="Delete this session and its photos">✕</button></li>`).join("")
+    : '<li class="muted">none yet</li>';
+  ul.querySelectorAll(".del").forEach(b => { b.onclick = () => removeSession(b.dataset); });
+}
+
+async function removeSession({name, count}) {
+  if (!confirm(`Delete session ${name} and its ${count} photo${count === "1" ? "" : "s"}?`
+               + "\nThis cannot be undone.")) return;
+  try {
+    const d = await post("session/delete", {name});
+    say(`Deleted ${d.deleted}` + (d.session !== name ? "" : ""));
+    loadVideos();
+  } catch (e) { say(e.message, true); }
+}
+
 async function loadVideos() {
   const vids = await (await fetch("videos")).json();
   $("videos").innerHTML = vids.length
@@ -353,10 +417,20 @@ $("clear-roi").onclick = async () => {
 };
 
 $("save-period").onclick = async () => {
+  const seconds = parseFloat($("period").value) * parseFloat($("period-unit").value);
   try {
-    const d = await post("period", {minutes: parseFloat($("period").value)});
+    const d = await post("period", {seconds});
     periodTouched = false;
-    say("Period set to " + d.period_min + " min");
+    say("A shot every " + fmtPeriod(d.period_s)
+        + (d.period_s < 10 ? " — a full-res capture takes about 4 s, so shots will"
+                           + " simply follow each other as fast as the camera manages" : ""));
+  } catch (e) { say(e.message, true); }
+};
+
+$("new-session").onclick = async () => {
+  try {
+    const d = await post("session/new");
+    say("New session " + d.session);
   } catch (e) { say(e.message, true); }
 };
 

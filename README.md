@@ -6,9 +6,12 @@ them into a timelapse video or GIF.
 - **Live view** in the browser, from a cheap downscaled stream.
 - **Drag a region** on the live view. Stills are stored as that crop at **full sensor
   resolution** — the preview is only small for viewing, the stored pixels are native.
-- **Configurable period** between shots, changeable from the browser while it runs.
+- **Configurable period** between shots — seconds, minutes or hours, changeable from
+  the browser while it runs.
+- **Sessions**: start a fresh one at any time, and delete old ones with their photos.
 - **Generate MP4 or GIF** on request, in the background, with a progress bar.
-- **One service**, restarts on failure, starts at boot.
+- **One service**, restarts on failure, starts at boot, and a watchdog that catches the
+  camera stalling without the process dying.
 
 Tested on a Raspberry Pi Zero 2 W (512 MB) with Camera Module v2.1 (IMX219), on
 Raspberry Pi OS Lite 64-bit. It also supports the HQ Camera (IMX477) via `--camera hq`.
@@ -87,9 +90,17 @@ http://timelapse.local:8080/
   stills are that crop at native sensor pixels. **Use full frame** clears it.
   Changing the region starts a new session directory, because one video cannot mix
   frame sizes.
-- **Period**: minutes between shots. Takes effect immediately, and is remembered
-  across restarts.
+- **Period**: a number plus a unit — seconds, minutes or hours. Takes effect
+  immediately and is remembered across restarts. A full-res capture takes about 4
+  seconds, so below that the shots simply follow each other as fast as the camera
+  manages. Watch the **Fills** figure: at 20-second intervals full frames come to
+  roughly 8 GB a day.
 - **Take a picture now**: one extra still, outside the schedule.
+- **Sessions**: **Start new session** begins a fresh directory without changing the
+  region — useful to separate one run from the next. The Sessions panel lists them all
+  with their shot count and size; **✕** deletes a session and its photos after a
+  confirmation. Deleting the one being recorded is allowed: a new session starts
+  immediately in its place.
 - **Generate**: pick a session, frames per second, MP4 or GIF, and a height (or
   "Native — no scaling" to keep the crop's true size). Encoding runs in the background;
   results appear under **Results** to download.
@@ -115,7 +126,8 @@ ExecStart=/usr/bin/python3 app.py --port 8080 --gain 3.0 --period 15
 | Flag | Default | Meaning |
 |---|---|---|
 | `--port` | 8080 | HTTP port |
-| `--period` | 15 | Minutes between stills. The value set in the browser wins |
+| `--period` | 15 | **Minutes** between stills, for the very first run only — once set in the browser, that value wins |
+| `--stall-limit` | 45 | Seconds a camera call may block before the process exits for a restart |
 | `--gain` | 3.0 | Fixed analogue gain, roughly ISO/100 |
 | `--camera` | v2.1 | `v2.1` (IMX219) or `hq` (IMX477) |
 | `--captures` `--video-dir` `--state` | in the repo | Override to store elsewhere |
@@ -139,6 +151,21 @@ therefore stays dark no matter how high the gain, because gain multiplies an alm
 black frame. For night shots you need a light source, or a custom tuning file allowing
 multi-second exposures.
 
+### When the camera stalls
+
+The vc4 pipeline occasionally stops delivering frames (`Camera frontend has timed
+out!` in the log). The call never returns, so the capture loop and the live view both
+freeze while the process stays alive — which means `Restart=always` alone never
+notices. A watchdog thread therefore times every camera call and, past
+`--stall-limit`, exits the process so systemd restarts it. Expect a line like:
+
+```
+camera call stuck for 46s (limit 45s) — exiting for a restart
+```
+
+You lose one frame and about ten seconds. Frequent stalls point at the ribbon cable or
+the power supply rather than at software.
+
 ## 7. Service management
 
 ```sh
@@ -153,6 +180,10 @@ sudo systemctl disable --now pi-timelapse   # stop and don't start at boot
 Full-frame stills are roughly 1–2 MB each; a small region is a fraction of that. At
 4 shots an hour a full frame fills about 150 MB a day, so a 8 GB card runs out in a
 few weeks. Check and copy off:
+
+The **Fills** figure in the Capture panel estimates the daily rate from the current
+period and the average photo size, which is the number to check before choosing a
+short interval. Delete whole sessions from the Sessions panel, or from a shell:
 
 ```sh
 du -sh captures/* videos; df -h /
