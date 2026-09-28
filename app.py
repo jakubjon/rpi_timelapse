@@ -379,8 +379,15 @@ class Capture:
             raise RuntimeError("JPEG encode failed")
         return buf.tobytes()
 
-    def capture_still(self) -> Path:
-        """Full-res frame, cropped to the ROI, saved at native pixels."""
+    def capture_still(self, session: str) -> Path:
+        """Full-res frame, cropped to the ROI, saved at native pixels.
+
+        The session is passed in, not read from self: a capture takes seconds, and
+        a Stop or a delete landing in the middle of one used to leave the still
+        writing into an empty session name — i.e. loose in the captures directory.
+        """
+        if not session:
+            raise RuntimeError("no open session")
         with self.camera() as cam:
             yuv = cam.capture_array("main")
             self.metadata = cam.capture_metadata()
@@ -388,8 +395,9 @@ class Capture:
         if self.roi:
             r = self.roi
             bgr = bgr[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
-        out_dir = self.base_dir / self.session
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = self.base_dir / session
+        if not out_dir.is_dir():              # stopped or deleted while we exposed
+            raise RuntimeError(f"session {session} is gone")
         # Second resolution collides when a manual shot lands in the same second as a
         # scheduled one; the suffix keeps both, and still sorts after the plain name.
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -428,7 +436,7 @@ class Capture:
                 self.wake.clear()
                 continue
             try:
-                self.capture_still()
+                self.capture_still(self.session)
             except Exception as exc:                       # keep the loop alive
                 self.last_error = f"{type(exc).__name__}: {exc}"
             self.next_time = time.time() + self.period_s
