@@ -45,6 +45,9 @@ ROOT = Path(__file__).resolve().parent
 # Native pixel-array size per camera module; the stills are crops of this.
 SENSORS = {"v2.1": (3280, 2464),      # IMX219, Camera Module v2.1
            "hq": (4056, 3040)}        # IMX477, HQ Camera
+TUNING = {"v2.1": "imx219.json", "hq": "imx477.json"}
+EXPOSURE_CEILING_US = 10_000_000  # how far the AGC is *allowed* to stretch (sensor limit ~11 s)
+MIN_FRAME_US = 100                # lower frame-duration bound; AE picks anything above it
 
 LORES_SIZE = (800, 600)      # live view stream; 4:3 like the sensor
 MIN_ROI = 64                 # px, in sensor coordinates
@@ -75,6 +78,31 @@ def write_levels(session_dir: Path, levels: dict) -> None:
         pass                     # a cache miss next time is not worth failing over
 
 
+def open_camera(tuning_file: str) -> Picamera2:
+    """Open the camera with the AGC's shutter ceiling raised.
+
+    Auto-exposure never picks a shutter longer than the last entry of the tuning
+    file's `rpi.agc` exposure_modes — 66.7 ms for the IMX219, whatever the light.
+    Raising it here only widens what AE *may* choose; what it actually uses is
+    bounded by FrameDurationLimits, which is the knob the UI exposes.
+    """
+    try:
+        tuning = Picamera2.load_tuning_file(tuning_file)
+        agc = Picamera2.find_tuning_algo(tuning, "rpi.agc")
+        for channel in agc.get("channels", [agc]):
+            for mode in channel["exposure_modes"].values():
+                shutter = [s for s in mode["shutter"] if s < EXPOSURE_CEILING_US]
+                mode["shutter"] = shutter + [EXPOSURE_CEILING_US]
+                gain = mode["gain"]
+                # The two lists index each other and must stay the same length.
+                mode["gain"] = (gain + [gain[-1]] * len(shutter))[:len(mode["shutter"])]
+        return Picamera2(tuning=tuning)
+    except Exception as exc:          # an unknown tuning file must not stop the app
+        print(f"could not patch tuning {tuning_file!r} ({exc}); "
+              f"exposure stays capped by the stock AGC limits", flush=True)
+        return Picamera2()
+
+
 def manual_controls(exposure_us: int | None, gain: float | None) -> dict:
     """Pin only the values given; whatever is left out stays under auto-exposure.
 
@@ -101,12 +129,14 @@ class Capture:
     """Owns the camera: interval ROI stills, on-demand stills, preview frames."""
 
     def __init__(self, base_dir: Path, sensor_size, gain: float,
-                 period_s: float, state_path: Path):
+                 period_s: float, state_path: Path, tuning_file: str,
+                 max_exposure_us: int):
         self.base_dir = base_dir
         self.sensor_size = sensor_size
         self.gain = gain
         self.state_path = state_path
         self.period_s = period_s
+        self.max_exposure_us = max_exposure_us
         self.roi: dict | None = None          # {x, y, w, h} in sensor px; None = full frame
         self.session: str = ""                # the open session; empty when stopped
         self.recording = False
@@ -120,11 +150,12 @@ class Capture:
         self.busy_since: float | None = None   # set while a camera call is in flight
         self.last_level: float | None = None   # brightness of the newest still
 
-        self.cam = Picamera2()
+        self.cam = open_camera(tuning_file)
         self.cam.configure(self.cam.create_video_configuration(
             main={"size": sensor_size, "format": "YUV420"},
             lores={"size": LORES_SIZE, "format": "YUV420"},
-            buffer_count=2))
+            buffer_count=2,
+            controls={"FrameDurationLimits": (MIN_FRAME_US, max_exposure_us)}))
         self.cam.start()
         self.cam.set_controls(manual_controls(None, gain))
         time.sleep(2)                         # let AE settle before the first shot
@@ -146,27 +177,35 @@ class Capture:
             self.period_s = float(saved["period_min"]) * 60
         self.roi = saved.get("roi")
         self.gain = float(saved.get("gain", self.gain))
+        self.max_exposure_us = int(saved.get("max_exposure_us", self.max_exposure_us))
         self.session = saved.get("session") or ""
         self.recording = bool(saved.get("recording", False)) and bool(self.session)
         if self.recording:
             (self.base_dir / self.session).mkdir(parents=True, exist_ok=True)
         else:
             self.session = ""                             # nothing is open when stopped
-        self.apply_gain()
+        self.apply_camera()
 
     def save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(json.dumps(
             {"period_s": self.period_s, "roi": self.roi, "gain": self.gain,
+             "max_exposure_us": self.max_exposure_us,
              "session": self.session, "recording": self.recording}, indent=1))
 
     def crop_size(self) -> tuple[int, int]:
         return (self.roi["w"], self.roi["h"]) if self.roi else self.sensor_size
 
-    def apply_gain(self) -> None:
-        """Pin the gain; AE keeps adjusting the exposure time to suit the light."""
+    def apply_camera(self) -> None:
+        """Pin the gain and the exposure ceiling; AE works within both.
+
+        A frame can never take less time than its exposure, so the frame-duration
+        limit *is* the longest exposure AE can reach. The stock video configuration
+        holds it near 1/30 s, which is why AE stalls around 40 ms however dark it is.
+        """
         with self.camera() as cam:
-            cam.set_controls(manual_controls(None, self.gain))
+            cam.set_controls({**manual_controls(None, self.gain),
+                              "FrameDurationLimits": (MIN_FRAME_US, self.max_exposure_us)})
 
     def start(self) -> str:
         """Open a session named for its time and frame size, and begin capturing."""
@@ -187,13 +226,14 @@ class Capture:
         self.wake.set()
         return closed
 
-    def set_setup(self, period_s: float, roi: dict | None, gain: float) -> None:
+    def set_setup(self, period_s: float, roi: dict | None, gain: float,
+                  max_exposure_us: int) -> None:
         """Settings for the next run — only while stopped, so a session is uniform."""
         self.period_s = period_s
         self.roi = roi
-        if gain != self.gain:
-            self.gain = gain
-            self.apply_gain()                 # visible in the live view straight away
+        if (gain, max_exposure_us) != (self.gain, self.max_exposure_us):
+            self.gain, self.max_exposure_us = gain, max_exposure_us
+            self.apply_camera()               # visible in the live view straight away
         self.save_state()
 
     def delete_session(self, name: str) -> str:
@@ -454,6 +494,7 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
         return jsonify({
             "recording": cap.recording,
             "period_s": cap.period_s,
+            "max_exposure_ms": round(cap.max_exposure_us / 1000),
             "mb_per_day": round(mb_each * 86400 / cap.period_s, 1),
             "gain": cap.gain,
             "sensor_size": list(cap.sensor_size),
@@ -488,6 +529,9 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
         gain = float(body.get("gain", cap.gain))
         if not 1.0 <= gain <= 16.0:
             return jsonify({"error": "gain must be 1–16"}), 400
+        max_us = int(float(body.get("max_exposure_ms", cap.max_exposure_us / 1000)) * 1000)
+        if not 1000 <= max_us <= EXPOSURE_CEILING_US:
+            return jsonify({"error": f"max exposure must be 1–{EXPOSURE_CEILING_US // 1000} ms"}), 400
         roi = cap.roi if "roi" not in body else body["roi"]
         if roi:
             sw, sh = cap.sensor_size
@@ -500,8 +544,9 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
             if w < MIN_ROI or h < MIN_ROI:
                 return jsonify({"error": f"region must be at least {MIN_ROI}x{MIN_ROI} px"}), 400
             roi = {"x": x, "y": y, "w": w, "h": h}
-        cap.set_setup(seconds, roi or None, gain)
+        cap.set_setup(seconds, roi or None, gain, max_us)
         return jsonify({"period_s": cap.period_s, "roi": cap.roi, "gain": cap.gain,
+                        "max_exposure_ms": round(cap.max_exposure_us / 1000),
                         "crop_size": list(cap.crop_size())})
 
     @app.post("/start")
@@ -605,10 +650,14 @@ def main() -> None:
                              "exposure time always stays automatic")
     parser.add_argument("--camera", default="v2.1", choices=sorted(SENSORS),
                         help="Camera module (sets the full-res sensor size)")
+    parser.add_argument("--max-exposure-ms", type=float, default=200.0,
+                        help="Longest exposure auto-exposure may use (the web UI sets "
+                             "it too). The live view runs at 1/exposure fps in the dark")
     args = parser.parse_args()
 
     cap = Capture(Path(args.captures), SENSORS[args.camera], args.gain,
-                  args.period * 60, Path(args.state))
+                  args.period * 60, Path(args.state), TUNING[args.camera],
+                  int(args.max_exposure_ms * 1000))
     cap.load_state()
     threading.Thread(target=cap.capture_loop, daemon=True).start()
     threading.Thread(target=cap.watchdog, args=(args.stall_limit,), daemon=True).start()

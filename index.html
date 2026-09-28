@@ -165,9 +165,13 @@
           <input id="gain" type="number" min="1" max="16" step="0.5" />
         </div>
         <div>
-          <label>Stored size</label>
-          <div class="value" id="s-crop">–</div>
+          <label for="max-exp">Max exposure (ms)</label>
+          <input id="max-exp" type="number" min="1" max="10000" step="10" />
         </div>
+      </div>
+      <div class="field">
+        <label>Stored size</label>
+        <div class="value" id="s-crop">–</div>
       </div>
       <button id="run" class="big go">Start</button>
       <div class="stats" id="run-stats" hidden>
@@ -318,7 +322,8 @@ function periodSeconds() {
 // Setup always goes as a whole, so Start records exactly what is on screen.
 async function sendSetup(extra) {
   const d = await post("setup", Object.assign(
-    {period_s: periodSeconds(), gain: parseFloat($("gain").value)}, extra || {}));
+    {period_s: periodSeconds(), gain: parseFloat($("gain").value),
+     max_exposure_ms: parseFloat($("max-exp").value)}, extra || {}));
   roi = d.roi;
   drawBox(roi);
   showSetup(d);
@@ -353,7 +358,8 @@ async function poll() {
     $("c-level").textContent = s.last_level === null ? "–" : s.last_level;
 
     // The settings belong to the run, so they are locked while it is going.
-    ["period", "period-unit", "gain", "clear-roi"].forEach(id => $(id).disabled = recording);
+    ["period", "period-unit", "gain", "max-exp", "clear-roi"]
+      .forEach(id => $(id).disabled = recording);
     wrap.classList.toggle("locked", recording);
     $("setup-panel").classList.toggle("live", recording);
     $("drag-hint").textContent = recording
@@ -371,6 +377,7 @@ async function poll() {
       $("period").value = +(s.period_s / unit).toFixed(unit === 1 ? 0 : 2);
     }
     if (!recording && active !== $("gain")) $("gain").value = s.gain;
+    if (!recording && active !== $("max-exp")) $("max-exp").value = s.max_exposure_ms;
     showSetup({roi: s.roi, crop_size: s.crop_size});
 
     $("s-count").textContent = s.photo_count;

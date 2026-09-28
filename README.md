@@ -100,6 +100,10 @@ The page is three steps, top to bottom.
   downscaled. **Stored size** shows exactly what each file will be.
 - **Gain**: fixed analogue gain, roughly ISO/100. It takes effect immediately, so the
   live view shows what you are choosing.
+- **Max exposure (ms)**: how long auto-exposure may expose for. The default 200 ms suits
+  daylight into dusk; raise it towards a second or more for night, at the cost of a slow
+  live view and motion blur. See "Exposure and gain" below for why 40 ms was the old
+  ceiling.
 
 Then press **Start**. A session directory is created for the run and capture begins;
 the button becomes **Stop**, and the settings lock, because a session whose frame size
@@ -149,6 +153,7 @@ ExecStart=/usr/bin/python3 app.py --port 8080 --gain 3.0 --period 15
 | `--period` | 15 | **Minutes** between stills, for the very first run only — afterwards the value set in the browser is remembered |
 | `--stall-limit` | 45 | Seconds a camera call may block before the process exits for a restart |
 | `--gain` | 3.0 | Default fixed analogue gain, roughly ISO/100; the browser sets it too |
+| `--max-exposure-ms` | 200 | Longest exposure AE may use; the browser sets it too |
 | `--camera` | v2.1 | `v2.1` (IMX219) or `hq` (IMX477) |
 | `--captures` `--video-dir` `--state` | in the repo | Override to store elsewhere |
 
@@ -165,11 +170,27 @@ picture follows the light through the day. Pinning both (the obvious
 `AeEnable: False`) freezes the exposure at whatever value the camera started on, and
 every frame after dusk comes out black.
 
-Auto-exposure will not go past the **66.7 ms** ceiling in the sensor's tuning file
-(`/usr/share/libcamera/ipa/rpi/vc4/imx219.json`, "normal" exposure mode). A dark room
-therefore stays dark no matter how high the gain, because gain multiplies an almost
-black frame. For night shots you need a light source, or a custom tuning file allowing
-multi-second exposures.
+**Max exposure** is the longest exposure AE may use, and it is what lets dusk and night
+work at all. Two separate ceilings used to hold it down:
+
+1. **Frame duration.** A frame cannot take less time than its exposure, so the frame
+   duration limit *is* the exposure ceiling. The stock video configuration pins it near
+   1/30 s, which is why AE stalled around 40 ms however dark it got. The app now sets
+   `FrameDurationLimits` from this setting, live.
+2. **The AGC tuning file.** `/usr/share/libcamera/ipa/rpi/vc4/imx219.json` lists the
+   shutter values AE may choose, ending at 66,666 µs ("normal" mode) or 120,000 µs
+   ("long"), and AE never goes past the last entry. At startup the app loads that file,
+   extends every exposure mode to 10 s and hands the patched copy to Picamera2, so the
+   list is no longer the limit. If the file cannot be read the app logs it and carries
+   on with the stock limits.
+
+The IMX219 tops out near 11 s. Three things to keep in mind when raising this:
+
+- The live view shares the sensor's timing, so in the dark it runs at **1/exposure fps** —
+  a 1 s cap means a 1 fps preview.
+- Each still takes at least its exposure, so a long ceiling plus a short period means
+  shots simply follow each other.
+- Long exposures are noisier, and anything that moves smears.
 
 ### When the camera stalls
 
