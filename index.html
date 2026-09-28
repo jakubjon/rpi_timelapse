@@ -137,7 +137,7 @@
   <aside class="side">
     <!-- 1. everything a run needs, then one button to begin it -->
     <section class="panel" id="setup-panel">
-      <h2>Session setup</h2>
+      <h2>Session setup <span class="sub" id="setup-sub"></span></h2>
       <div class="grid2">
         <div>
           <label for="period">Between shots</label>
@@ -378,6 +378,13 @@ async function poll() {
     }
     if (!recording && active !== $("gain")) $("gain").value = s.gain;
     if (!recording && active !== $("max-exp")) $("max-exp").value = s.max_exposure_ms;
+    if (s.limits) {
+      // A full-res frame cannot be shorter than its readout, so anything below
+      // frame_min_ms is raised by libcamera rather than honoured.
+      $("max-exp").max = s.limits.exposure_max_ms;
+      $("setup-sub").textContent = `exposure ${s.limits.frame_min_ms}–`
+        + `${(s.limits.exposure_max_ms / 1000).toFixed(1)} s`;
+    }
     showSetup({roi: s.roi, crop_size: s.crop_size});
 
     $("s-count").textContent = s.photo_count;

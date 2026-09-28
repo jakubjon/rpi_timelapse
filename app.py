@@ -193,6 +193,18 @@ class Capture:
              "max_exposure_us": self.max_exposure_us,
              "session": self.session, "recording": self.recording}, indent=1))
 
+    def sensor_limits(self) -> dict:
+        """What the sensor mode itself allows, in ms — the real ceiling and floor.
+
+        A full-res frame cannot be shorter than its readout (~47 ms here), so a
+        max-exposure below that is raised by libcamera rather than honoured.
+        """
+        lo, hi, _ = self.cam.camera_controls["ExposureTime"]
+        frame_lo = self.cam.camera_controls["FrameDurationLimits"][0]
+        return {"exposure_min_ms": round(lo / 1000, 2),
+                "exposure_max_ms": round(hi / 1000),
+                "frame_min_ms": round(frame_lo / 1000, 1)}
+
     def crop_size(self) -> tuple[int, int]:
         return (self.roi["w"], self.roi["h"]) if self.roi else self.sensor_size
 
@@ -495,6 +507,7 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
             "recording": cap.recording,
             "period_s": cap.period_s,
             "max_exposure_ms": round(cap.max_exposure_us / 1000),
+            "limits": cap.sensor_limits(),
             "mb_per_day": round(mb_each * 86400 / cap.period_s, 1),
             "gain": cap.gain,
             "sensor_size": list(cap.sensor_size),
