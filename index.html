@@ -281,7 +281,7 @@ wrap.addEventListener("pointerup", async ev => {
   if (box.w < 64 || box.h < 64) { drawBox(roi); return; }   // a click, not a drag
   sendSetup({roi: box});
 });
-window.addEventListener("resize", () => drawBox(roi));
+window.addEventListener("resize", () => drawBox(recording ? null : roi));
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 function fmtAge(s) {
@@ -345,8 +345,10 @@ async function poll() {
   try {
     const s = await (await fetch("status")).json();
     sensor = s.sensor_size;
-    if (!drag) { roi = s.roi; drawBox(roi); }
     recording = s.recording;
+    // While recording the picture *is* the crop, so a box drawn in sensor
+    // coordinates would sit over the wrong part of it.
+    if (!drag) { roi = s.roi; drawBox(recording ? null : roi); }
 
     const chip = $("chip-state");
     chip.className = "chip" + (recording ? " rec" : "");
@@ -363,8 +365,8 @@ async function poll() {
     wrap.classList.toggle("locked", recording);
     $("setup-panel").classList.toggle("live", recording);
     $("drag-hint").textContent = recording
-      ? "Recording: the camera is in still mode for the best picture quality, so this"
-        + " shows the newest capture rather than a live feed. Stop the run to frame again."
+      ? "Recording: this is the newest capture, cropped to the region — the camera is"
+        + " in still mode for quality, so there is no live feed. Stop the run to frame again."
       : "Drag a box on the picture to set the region — it applies at once, and stills"
         + " are stored as that crop at full sensor resolution.";
     $("run").textContent = recording ? "Stop" : "Start";
