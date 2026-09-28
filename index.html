@@ -363,7 +363,8 @@ async function poll() {
     wrap.classList.toggle("locked", recording);
     $("setup-panel").classList.toggle("live", recording);
     $("drag-hint").textContent = recording
-      ? "The region is fixed while recording — stop the run to change it."
+      ? "Recording: the camera is in still mode for the best picture quality, so this"
+        + " shows the newest capture rather than a live feed. Stop the run to frame again."
       : "Drag a box on the picture to set the region — it applies at once, and stills"
         + " are stored as that crop at full sensor resolution.";
     $("run").textContent = recording ? "Stop" : "Start";

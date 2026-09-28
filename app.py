@@ -50,6 +50,7 @@ EXPOSURE_CEILING_US = 10_000_000  # how far the AGC is *allowed* to stretch (sen
 MIN_FRAME_US = 100                # lower frame-duration bound; AE picks anything above it
 
 LORES_SIZE = (800, 600)      # live view stream; 4:3 like the sensor
+BINNED_SIZE = (1640, 1232)   # 2x2 binned mode: the whole sensor, cheap to stream
 MIN_ROI = 64                 # px, in sensor coordinates
 LEVELS_FILE = ".brightness.json"   # cached mean brightness per still, per session
 VIDEO_SUFFIXES = (".mp4", ".gif")
@@ -149,16 +150,51 @@ class Capture:
         self.metadata: dict = {}
         self.busy_since: float | None = None   # set while a camera call is in flight
         self.last_level: float | None = None   # brightness of the newest still
+        self.mode = "setup"
+        self.preview_cache: bytes | None = None   # last still, shown while recording
 
         self.cam = open_camera(tuning_file)
-        self.cam.configure(self.cam.create_video_configuration(
-            main={"size": sensor_size, "format": "YUV420"},
-            lores={"size": LORES_SIZE, "format": "YUV420"},
-            buffer_count=2,
-            controls={"FrameDurationLimits": (MIN_FRAME_US, max_exposure_us)}))
-        self.cam.start()
-        self.cam.set_controls(manual_controls(None, gain))
-        time.sleep(2)                         # let AE settle before the first shot
+        self.configure("setup")
+
+    # ── camera modes ─────────────────────────────────────────────────────────
+    def build_config(self, mode: str):
+        """Framing and capturing want different cameras, so each gets its own.
+
+        setup  — a small preview stream off the binned full-FOV mode: smooth, cheap,
+                 and framing is all it is for.
+        record — a still configuration at the full readout, which is what actually
+                 improves the pictures: high-quality noise reduction instead of the
+                 video pipeline's fast path, and no second stream competing for
+                 bandwidth or memory on a 512 MB Pi.
+
+        Both keep the same field of view, so a region dragged while framing crops
+        the same part of the scene once recording starts.
+        """
+        limits = {"FrameDurationLimits": (MIN_FRAME_US, self.max_exposure_us)}
+        if mode == "record":
+            return self.cam.create_still_configuration(
+                main={"size": self.sensor_size, "format": "YUV420"},
+                buffer_count=1,
+                controls={**limits,
+                          "NoiseReductionMode": lc.draft.NoiseReductionModeEnum.HighQuality})
+        return self.cam.create_video_configuration(
+            main={"size": LORES_SIZE, "format": "YUV420"},
+            raw={"size": BINNED_SIZE},        # full-FOV mode, so framing matches
+            buffer_count=3, controls=limits)
+
+    def configure(self, mode: str) -> None:
+        with self.lock:
+            self.busy_since = time.time()
+            try:
+                if self.cam.started:
+                    self.cam.stop()
+                self.cam.configure(self.build_config(mode))
+                self.cam.start()
+                self.cam.set_controls(manual_controls(None, self.gain))
+                self.mode = mode
+            finally:
+                self.busy_since = None
+        time.sleep(2)                         # let AE settle in the new mode
 
     # ── state ────────────────────────────────────────────────────────────────
     def load_state(self) -> None:
@@ -182,6 +218,7 @@ class Capture:
         self.recording = bool(saved.get("recording", False)) and bool(self.session)
         if self.recording:
             (self.base_dir / self.session).mkdir(parents=True, exist_ok=True)
+            self.configure("record")          # a run resumes in its own mode
         else:
             self.session = ""                             # nothing is open when stopped
         self.apply_camera()
@@ -224,6 +261,8 @@ class Capture:
         w, h = self.crop_size()
         self.session = f"{datetime.now():%Y%m%d_%H%M%S}_{w}x{h}"
         (self.base_dir / self.session).mkdir(parents=True, exist_ok=True)
+        self.preview_cache = None
+        self.configure("record")
         self.recording = True
         self.save_state()
         self.wake.set()                       # shoot now, then on the period
@@ -234,6 +273,7 @@ class Capture:
         closed, self.session, self.recording = self.session, "", False
         if closed and not any((self.base_dir / closed).glob("*.jpg")):
             shutil.rmtree(self.base_dir / closed, ignore_errors=True)
+        self.configure("setup")
         self.save_state()
         self.wake.set()
         return closed
@@ -312,11 +352,29 @@ class Capture:
         return cv2.cvtColor(i420, cv2.COLOR_YUV2BGR_I420)
 
     def preview_jpeg(self) -> bytes:
+        """Live while framing; while recording, the newest still instead.
+
+        Recording runs the still configuration, which has no preview stream — and
+        re-reading 8 MP every two seconds to animate a picture nobody is framing
+        would cost more than the timelapse itself.
+        """
+        if self.mode == "record":
+            if self.preview_cache is None:
+                raise RuntimeError("no capture yet")
+            return self.preview_cache
         with self.camera() as cam:
-            yuv = cam.capture_array("lores")
+            yuv = cam.capture_array("main")
             self.metadata = cam.capture_metadata()
-        bgr = self.to_bgr("lores", yuv)
-        ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return self.encode_preview(self.to_bgr("main", yuv), 80)
+
+    @staticmethod
+    def encode_preview(bgr, quality: int) -> bytes:
+        h, w = bgr.shape[:2]
+        if w > LORES_SIZE[0]:
+            scale = LORES_SIZE[0] / w
+            bgr = cv2.resize(bgr, (LORES_SIZE[0], max(1, int(h * scale))),
+                             interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
         if not ok:
             raise RuntimeError("JPEG encode failed")
         return buf.tobytes()
@@ -348,6 +406,7 @@ class Capture:
         levels = read_levels(out_dir)
         levels[path.name] = self.last_level
         write_levels(out_dir, levels)
+        self.preview_cache = self.encode_preview(bgr, 80)
         self.last_path, self.last_time, self.last_error = path, time.time(), None
         return path
 
@@ -490,7 +549,11 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
 
     @app.get("/preview.jpg")
     def preview():
-        return Response(cap.preview_jpeg(), mimetype="image/jpeg",
+        try:
+            data = cap.preview_jpeg()
+        except RuntimeError as exc:           # recording, before the first capture
+            return Response(str(exc), status=503)
+        return Response(data, mimetype="image/jpeg",
                         headers={"Cache-Control": "no-store"})
 
     @app.get("/status")
@@ -508,6 +571,7 @@ def create_app(cap: Capture, video_dir: Path) -> Flask:
             "period_s": cap.period_s,
             "max_exposure_ms": round(cap.max_exposure_us / 1000),
             "limits": cap.sensor_limits(),
+            "mode": cap.mode,
             "mb_per_day": round(mb_each * 86400 / cap.period_s, 1),
             "gain": cap.gain,
             "sensor_size": list(cap.sensor_size),

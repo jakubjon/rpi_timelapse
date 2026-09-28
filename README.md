@@ -3,7 +3,7 @@
 A small web app for a Raspberry Pi camera that shoots long-interval stills and turns
 them into a timelapse video or GIF.
 
-- **Live view** in the browser, from a cheap downscaled stream.
+- **Live view** for framing, from a cheap downscaled stream.
 - **Drag a region** on the live view. Stills are stored as that crop at **full sensor
   resolution** — the preview is only small for viewing, the stored pixels are native.
 - **Explicit runs**: set the period, region and gain, press **Start**, press **Stop**.
@@ -162,6 +162,30 @@ After editing the unit:
 ```sh
 sudo systemctl daemon-reload && sudo systemctl restart pi-timelapse
 ```
+
+### Two camera modes
+
+Framing and capturing want different things from the camera, so the app reconfigures it
+at Start and Stop rather than compromising:
+
+| | while stopped (framing) | while recording |
+|---|---|---|
+| configuration | video, 800x600 preview | **still**, full sensor readout |
+| sensor mode | 2x2 binned, same field of view | full resolution |
+| noise reduction | fast (video pipeline) | **high quality** |
+| streams | one small one | one, nothing competing |
+| frame floor / exposure ceiling | 12.3 ms / 5.9 s | 47.2 ms / 11.8 s |
+
+The still configuration is what actually improves the pictures: high-quality noise
+reduction instead of the video pipeline's fast path, the full readout, and no second
+stream taking memory or bandwidth on a 512 MB Pi. Its cost is that there is no preview
+stream, so while recording the page shows the **newest capture** instead of a live feed —
+which is all a fixed scene needs. Both modes keep the same field of view, so a region
+dragged while framing crops the same part of the scene once the run starts.
+
+For the cleanest results on a fixed scene: **gain 1.0** and a generous max exposure. Gain
+multiplies noise along with signal, while a longer exposure collects more light — and
+with a scene that does not move, there is nothing to blur.
 
 ### Exposure and gain
 
