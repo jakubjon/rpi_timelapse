@@ -503,6 +503,20 @@ async function loadVideos() {
 }
 
 // ── actions ─────────────────────────────────────────────────────────────────
+// Each setting applies when you leave the field (Enter counts), so the camera
+// shows what a run would get. Without this the value only reached the server on
+// Start, and the next poll wrote the old one back over what you had typed.
+["period", "period-unit", "gain", "max-exp"].forEach(id => {
+  $(id).addEventListener("change", async () => {
+    if (recording) return;
+    try {
+      const d = await sendSetup({});
+      say(`Every ${fmtPeriod(d.period_s)} · gain ${d.gain}× · max exposure `
+          + `${d.max_exposure_ms} ms`);
+    } catch (e) { say(e.message, true); }
+  });
+});
+
 $("clear-roi").onclick = async () => {
   try { await sendSetup({roi: null}); } catch (e) { say(e.message, true); }
 };
